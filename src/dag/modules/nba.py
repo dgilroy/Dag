@@ -59,15 +59,6 @@ class NBA(dag.DagMod):
 		return
 		
 
-	@dag.cmd(display = this._display_standings, catch = (ValueError))	
-	def standings(self):
-		headers = {
-				"x-rapidapi-key": "d290e6e1dfmshc9b5fa7822aa1b2p103073jsndb4ca97d3d71",
-				"x-rapidapi-host": "api-nba-v1.p.rapidapi.com",
-			};
-		return self.get(f"https://api-nba-v1.p.rapidapi.com/standings/standard/2020", headers = headers)
-		
-
 	def _display_standings(self, response, formatter):
 		breakpoint()
 		return response
