@@ -1,0 +1,16 @@
+#!/usr/bin/python3.8
+
+import sys, asyncio
+
+from dag import Dag
+from DagPromptToolkitCLIView import DagPromptToolkitCLIView
+
+
+async def main():
+	dag = Dag.DagCLIController(DagPromptToolkitCLIView(), sys.argv)
+	#Dag._dag = dag
+	await dag.async_command_loop()
+
+
+if __name__ == "__main__":
+	asyncio.run(main())
