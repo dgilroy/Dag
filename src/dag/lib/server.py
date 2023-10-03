@@ -1,3 +1,4 @@
+from typing import Self
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
@@ -24,28 +25,27 @@ class Server(dot.DotAccess):
 		self.requests = []
 		
 
-	def __enter__(self):
+	def __enter__(self) -> Self:
 		self.server = HTTPServer((self.hostname, self.port), self.requestHandler)
-		print(f"DagServer started http://{self.hostname}:{self.port}")
+		dag.echo(f"DagServer started http://{self.hostname}:{self.port}")
 		return self
 
 
 	def __exit__(self, type, value, traceback):
 		self.server.server_close()
 		self.server = None
-		print("DagServer closed")
+		dag.echo("DagServer closed")
 
 
 	def __getattr__(self, value, default = None):
 		return getattr(self.server, value, default)
 
-	def serve_once(self):
+
+	def serve_once(self) -> None:
 		self.server.serve_forever()
 		return
 
-
-	def listen_once(self, retry_time = 1):
-		breakpoint()
+	def listen_once(self, retry_time: float = 1) -> None:
 		while True:
 			if self.requests:
 				return self.requests.pop(0)

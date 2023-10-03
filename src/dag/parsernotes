@@ -1,0 +1,14 @@
+parser will return InputCommand object with Callable, dict of args, original string of command, dagmod (or None if no dagmod).
+	- If one arg is a subcommand, run that subcommand and place its value in the arg
+	- if arg has requirements (like messages be wrapped in ""), validate (Or have this be separate process)
+	- Handle piping output of one command into next
+	- expand commas so that (nhl teams hurricanes, avalanche) runs (nhl teams hurricanes; nhl teams avalanche)
+	- InputCommand should replace LineArgsaa
+	- Detect filts and directives
+	- Outputs InputCommands
+	- IC's don't need all args filled. Dict will be ordered dict, last key will be current arg
+	- For instances where a named arg is being typed (eg: --shi), needs to know to offer suggestions
+
+
+PARSERS return Abstract Syntax Trees:
+	- Nested lists [[NHL TEAMS HURRICANES],[NHL TEAMS AVALANCHE]]

@@ -5,35 +5,35 @@ from dag.util import drill
  
 
 
-def test__get_drillbits():
-	drillstr = drill._get_drillbits("wow.now[1]")
+def test_get_drillbits():
+	drillstr = drill.get_drillbits("wow.now[1]")
 	assert drillstr == ['wow', 'now', '[1]']
 
-	drillstr = drill._get_drillbits("wow.now['1']")
+	drillstr = drill.get_drillbits("wow.now['1']")
 	assert drillstr == ['wow', 'now', "['1']"]
 
-	drillstr = drill._get_drillbits('wow.now["1"]')
+	drillstr = drill.get_drillbits('wow.now["1"]')
 	assert drillstr == ['wow', 'now', '["1"]']
 
-	drillstr = drill._get_drillbits("wow.outside[inside(1)]")
+	drillstr = drill.get_drillbits("wow.outside[inside(1)]")
 	assert drillstr == ['wow', 'outside', '[inside', '(1)]']
 
-	drillstr = drill._get_drillbits("bing.bang(arg1, arg2, arg3)")
+	drillstr = drill.get_drillbits("bing.bang(arg1, arg2, arg3)")
 	assert drillstr == ['bing', 'bang', '(arg1, arg2, arg3)']
 
-	drillstr = drill._get_drillbits("oof,goof,mcgee", splitter = ",")
+	drillstr = drill.get_drillbits("oof,goof,mcgee", splitter = ",")
 	assert drillstr == ['oof', 'goof', 'mcgee']
 
-	drillstr = drill._get_drillbits("wow")
+	drillstr = drill.get_drillbits("wow")
 	assert drillstr == ['wow']
 
-	drillstr = drill._get_drillbits("")
+	drillstr = drill.get_drillbits("")
 	assert drillstr == ['']
 
-	drillstr = drill._get_drillbits("oof\ngoof", splitter = "\n")
+	drillstr = drill.get_drillbits("oof\ngoof", splitter = "\n")
 	assert drillstr == ['oof', 'goof']
 
-	drillstr = drill._get_drillbits("wow.now[1].browncow()")
+	drillstr = drill.get_drillbits("wow.now[1].browncow()")
 	assert drillstr == ['wow', 'now', '[1]', "browncow", "()"]
 
 

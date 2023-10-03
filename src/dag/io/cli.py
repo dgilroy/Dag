@@ -1,4 +1,5 @@
-import subprocess, getpass, shlex
+import subprocess, getpass, shlex, re
+from contextlib import contextmanager
 
 import dag
 from dag.lib import concurrency
@@ -8,18 +9,20 @@ from dag.exceptions import DagSubprocessRunError
 from dag.responses import parse_response_item
 
 
+def raise_subproc_error(response):
+	raise DagSubprocessRunError(f"<c u>Dag Cli Return Code: {response.returncode}</c u>\n  "+ str(response.stderr)[2:-3])
+
 
 def subproc(action, commands):
 	def _do_subprocess(args):
 		#action = args.pop(0)
-		print(f"RUNNING {args}\n")
+		dag.echo(f"RUNNING {args}\n")
 		try:
 			response = action(shlex.split(args + " ")) # Space added so that files ending with '\' don't complain about no escaped character
 			if response.returncode:
-				raise DagSubprocessRunError(f"DagMod: Process errored with return code: {response.returncode}")
+				raise_subproc_error(response)
 		except OSError as e:
-			print('cmd exception: ', e)
-
+			dag.echo('cmd exception: ', e)
 
 	is_str = isinstance(commands, str)
 	commands = [commands] if is_str else commands 
@@ -29,19 +32,6 @@ def subproc(action, commands):
 	dag.hooks.do("post_run", response)
 	
 	return response[0] if is_str else response
-
-
-
-
-def run(argstr):
-	try:
-		dag.hooks.do("pre_run", argstr)
-		response = subprocess.run(shlex.split(argstr + " ")) # Space added so that files ending with '\' don't complain about no escaped character
-		dag.hooks.do("post_run", response)
-		if response.returncode:
-			raise DagSubprocessRunError(f"DagMod: Process errored with return code: {response.returncode}")
-	except OSError as e:
-		print('cmd exception: ', e)
 
 
 
@@ -82,39 +72,131 @@ def popen(commands, threaded = False, stdout = subprocess.PIPE, stderr = subproc
 		return response[0] if is_str else response
 
 
-@dag.iomethod(name = "pipe", group = "cli")
-def pipe(args):
-	response = ""
+def do_subprocess_call(args: list[str], pipe: bool = False, **kwargs) -> str:
+	response = "Dag Pipe: No Response" if pipe else ""
+	stdout = subprocess.PIPE if pipe else None
+	stderr = subprocess.PIPE if pipe else None
 
-	args = args.split(";")
+	args = dag.parser.lexer.token_split(args.strip(), ";")
+
 	for arg in args:
 		try:
-			output = subprocess.run(shlex.split(arg), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-			response = output.stdout.decode("utf-8").strip() or "\n\n<c red underline>DAG CMD ERROR:		</c underline>\n" + output.stderr.decode("utf-8").strip() + "</c>" # ONLY LAST RESPONSE WILL BE SENT
+			if not arg:
+				continue
+
+			output = subprocess.run(shlex.split(arg), stdout=stdout, stderr=stderr)
+			#if output.returncode:
+			#	raise_subproc_error(output)
+
+			if output.stdout:
+				response = output.stdout.decode("utf-8").strip() # ONLY LAST RESPONSE WILL BE SENT
+			elif output.stderr:
+				response = "\n\n<c red underline>DAG CMD ERROR:		</c underline>\n" + output.stderr.decode("utf-8").strip() + "</c>" # ONLY LAST RESPONSE WILL BE SENT	
+
 		except OSError as e:
-			print('cmd exception: ', e)
+			dag.echo('cmd exception: ', e)
 
 	return response
 
 
 
+@dag.iomethod(name = "run", group = "cli")
+def run(args: list[str], **kwargs) -> None:
+	do_subprocess_call(args, pipe = False, **kwargs) # Run doesn't return anything
+
+
+@dag.iomethod(name = "pipe", group = "cli")
+def pipe(args: list[str], **kwargs) -> str:
+	return do_subprocess_call(args, pipe = True, **kwargs)
+
+
+
 def bell():
-	print('\a')
+	dag.echo('\a')
 
 
 
 ### PROMPTING ###		
-def prompt(message = "", complete_list = None, display_choices = True, prefill = ""):
-	return prompter.prompt(message, complete_list, display_choices, prefill)
+def prompt(message = "", **kwargs):
+	return dag.instance.view.promptclass(message + (kwargs.get("suffix", "")), **kwargs).prompt()
 
 
-def confirm(*args, confirmer = None, **kwargs):
-	if confirmer is None:
+def prompt2(message = "", suffix = "", **kwargs):
+	return prompter.prompt(message + suffix, **kwargs)
+
+
+
+def confirm(message, *args, confirmer = None, force = False, suffix = "", use_getch = True, confirmval = None, **kwargs):
+	if force or dag.settings.force:
+		return True
+
+	if confirmval:
+		confirmer = lambda x: x == confirmval
+		suffix = suffix or f" (type <c green1 i b>{confirmval}</c green1 i b> to proceed)"
+		use_getch = False
+	elif confirmer is None:
 		confirmer = lambda x: x.lower().startswith("y")
+		suffix = suffix or " (Press <c green1 i b>\"y\"</c green1 i b> for yes)"
 
-	val = prompt(*args, **kwargs)
+	try:
+		while True:
+			if use_getch:
+				val = getch(message + suffix)
+			else:
+				val = prompt(message + suffix)
+			#val = prompt(*args, suffix = suffix, **kwargs)
+			if val:
+				break
+	except (Exception, BaseException):
+		return False
 
 	return confirmer(val)
 
+
+def confirmprompt(*args, **kwargs):
+	return confirm(*args, use_getch = False, **kwargs)
+
+
 def password(message):
 	return getpass.getpass(f"{message} (hidden): ") 
+
+
+def passwordverify(message, message2 = ""):
+	if not message2:
+		message2 = re.sub(r"[eE]nter", "Re-enter", message) if "nter" in message else f"Re-enter {message}"
+
+	while True:
+		val1 = getpass.getpass(f"{message} (hidden): ") 	
+		val2 = getpass.getpass(f"{message2} (hidden): ") 	
+		if val1 == val2:
+			break
+
+		dag.echo("\n<c bu>The two entries didn't match. Please try again</c bu>\n")
+
+
+@contextmanager
+def confirmer(*args, force = False, **kwargs):
+	val = False
+	if force:
+		val = True
+	else:
+		val = confirm(*args, **kwargs)
+
+	yield val
+
+	if not val:
+		dag.echo("No action taken")
+
+
+
+def getch(message = "CHAR"):
+	import tty, termios, sys
+	fd = sys.stdin.fileno()
+	old_settings = termios.tcgetattr(fd)
+	try:
+		dag.echo(message)	
+		tty.setraw(sys.stdin.fileno())
+		ch = sys.stdin.read(1)
+	finally:
+		termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+	return ch

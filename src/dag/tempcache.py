@@ -1,25 +1,57 @@
-import random, shutil, tempfile
-from typing import NoReturn
+import random, shutil, tempfile, secrets, string, atexit
+from tempfile import TemporaryDirectory
+from pathlib import Path
 
 import dag
-from dag.persistence import DagCmdExCtxPersistenceFile
+from dag.cachefiles import DagCmdExCtxPersistenceFile
 
 
-def get_tempcache_path(idno: int) -> str:		
-	"""Returns the directory that stores Dag instance's tempcache files"""
-	return dag.config.TEMPCACHE_DIR + f"/{idno}"
+class TempDagCmdExCtxPersistenceFile(DagCmdExCtxPersistenceFile):
+	def __init__(self):
+		# Inititally set to "None" so that code is less likely to clutter /tmp with unneeded/forgotten tmp directories unless it is truly needed to be made
+		self._tempdir = None
+		self._root = None
 
 
-# Randomly generated temp ID that will store temp results
-_tempcacheID = random.randint(0, 1e32-1)
+	@property
+	def tempdir(self):
+		if self._tempdir is None:
+			self._tempdir = tempfile.TemporaryDirectory(prefix = "dag-")
+
+		return self._tempdir
+
+	@property
+	def root(self):
+		if self._root is None:
+			self._root = Path(self.tempdir.name)
+
+		return self._root
+
+
+	def get_folder_from_dagcmd_exctx(self, exctx):
+		"""
+		if self.tempdir is None:
+			self.tempdir = tempfile.TemporaryDirectory(prefix = "dag-")
+			self.root = Path(tempdir.name)
+		"""
+
+		return super().get_folder_from_dagcmd_exctx(exctx)
+
 
 
 # The manager that writes/reads tempcache files
-TempCacheFile = DagCmdExCtxPersistenceFile(get_tempcache_path(_tempcacheID))
+tempcachefiles = TempDagCmdExCtxPersistenceFile()
 
 
-def clean() -> NoReturn:
+def clean() -> None:
 	"""removes all tempcache files related to Dag instance"""
+	if tempcachefiles.tempdir:
+		tempcachefiles.tempdir.cleanup()
 
-	assert _tempcacheID, "_tempcacheID must be specified for directory deletion to occur"
-	shutil.rmtree(dag.ROOT_PATH / f"{dag.config.TEMPCACHE_DIR}/{_tempcacheID}", ignore_errors = True)
+
+
+def generate_filepath(filename: str = ""):
+	temprootpath = tempcachefiles.root
+	filename = filename or dag.generate_password(spchars = "")
+
+	return temprootpath / filename

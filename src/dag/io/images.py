@@ -1,23 +1,44 @@
 import io, math, shutil, pathlib
+from collections import namedtuple
 
 import dag
 
+with dag.dtprofiler("import PIL Image"):
+	from PIL import Image
 
-class DagImg(dag.DotAccess):
+ImgDimensions = namedtuple("ImgDimensions", "height width")
+FILETYPES = [".jpg", ".png", ".jpeg", ".gif", ".bmp", ".tiff"]
+
+
+class DagImg(dag.DotProxy):
 	def __init__(self, img):
+		if isinstance(img, bytes):
+			from PIL import Image
+			img = Image.open(io.BytesIO(img))
+
 		self.img = img # Should be a Pillow Image
+		super().__init__(self.img)
 
 
-	def __getattr__(self, attr):
-		return getattr(self.img, attr)
+	def convert(self, *args, **kwargs):
+		self.img = self.img.convert(*args, **kwargs)
+		return self
 
 
-	def to_cli(self, symbol = "█", maxwidth = 99999, maxheight = 99999, sharp = False):
+	@staticmethod
+	def new(*args, **kwargs):
+		from PIL import Image
+		return Image.new(*args, **kwargs)
+
+
+	def to_cli(self, symbol = "█", maxwidth = 99999, maxheight = 99999, sharp = False, cropbbox = True):
 		from PIL import Image
 		img = self.img
 
-		bbox = img.getbbox()
-		img = img.crop((bbox[0], bbox[1], bbox[2], bbox[3]))
+
+		if cropbbox:
+			bbox = img.getbbox()
+			img = img.crop((bbox[0], bbox[1], bbox[2], bbox[3]))
 
 		# Converts image so that transparent pixels turn black (looks better on black terminal)
 		if not sharp:
@@ -27,16 +48,16 @@ class DagImg(dag.DotAccess):
 			img = Image.alpha_composite(background, img)
 
 
-		
 		maximgwidth = shutil.get_terminal_size().columns - 5
 		maximgheight = min(maxheight, shutil.get_terminal_size().lines - 5)
 		
-		newwidth = min(maxwidth, math.floor(img.size[0] * (maximgheight / img.size[1]) *(29/16)), maximgwidth)
+		newwidth = min(maxwidth, math.floor(img.size[0] * (maximgheight / img.size[1]) *(20/9)), maximgwidth)
 		#newheight = math.floor(maximgheight * (maxwidth / newwidth)) if newwidth > maximgwidth else maximgheight
 		newheight = int(math.floor(newwidth * img.height/img.width) * 16/29)
 
 		img2 = img.resize((newwidth, newheight), resample = Image.BILINEAR)
 		rgb = img2.convert("RGB")
+
 		
 		hexes = {}
 		for col in range(0, newheight):
@@ -60,7 +81,6 @@ class DagImg(dag.DotAccess):
 	@classmethod
 	def from_url(cls, url, cache = True, bytes = True):
 		from PIL import Image
-
 		get = dag.get
 
 		if cache:
@@ -75,16 +95,21 @@ class DagImg(dag.DotAccess):
 
 
 	@classmethod
-	def from_path(cls, path):
+	def open(cls, path):
 		from PIL import Image
 
 		img = Image.open(path)
 		return cls(img)
 
+
+	from_path = open
+
+
 	@classmethod
 	def from_pdf(cls, path):
 		import pdf2image
-
+		breakpoint()
+		pass
 
 
 	def to_formatter(self, formatter, **kwargs):
@@ -134,7 +159,7 @@ class DagImg(dag.DotAccess):
 		assert height or width, "Must enter height or width"
 		
 		if height and width:
-			self.img = self.img.resize((height, width))
+			self.img = self.img.resize((width, height))
 		else:
 			height = height or 10000
 			width = width or 10000
@@ -148,3 +173,11 @@ class DagImg(dag.DotAccess):
 		dag.echo(f"Saving images <c b>{filename}</c> at size <c b>{self.img.width}x{self.img.height}</c>")
 		self.img.save(filename, subsampling = subsampling, **kwargs)
 		return self
+
+
+	def dim(self) -> ImgDimensions:
+		return ImgDimensions(self.height, self.width)
+
+
+	def __repr__(self):
+		return f"DagImg({self.filename})"

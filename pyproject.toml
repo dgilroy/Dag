@@ -2,32 +2,44 @@
 name = "dag"
 version = "0.0.0.0.0.0.0.1"
 description = "CLI to tie together APIs"
-authors = [
-    "Dylan Gilroy <[email protected]>"
-]
-license = "MIT"
+#authors = [
+#    "Dylan Gilroy <[email protected]>"
+#]
+#license = "MIT"
 readme = "README.md"
-python = "^3.9"
-homepage = "https://github.com/dgilroy/dag"
-repository = "https://github.com/dgilroy/dag"
-documentation = "https://github.com/dgilroy/dag"
+requires-python = ">=3.9"
 
 keywords = ["dag"]
 
 # Requirements
 dependencies = [
-    "dill >=0.3.4",                 # Better Pickling
+    "dill >=0.3.6",                 # Better Pickling
     "python-dateutil >=2.8.2",      # Date utilities
     "lxml >=4.7.1",                 # For processing HTML
-    "cssselect >=1.1.0"             # For html processing
+    "cssselect >=1.1.0",            # For html processing
     "pathos >=0.2.8",               # For multiprocessing
-    #"pillow >=8.4.0",              # Image maniuplation
-    #"pdf2image" >= 1.16.0          # Turn images into PDFs
+    "pillow >=8.4.0",               # Image maniuplation
+    "pdf2image >= 1.16.0",          # Turn images into PDFs
     "requests >=2.26",              # fetching info from URLs
     "selenium >=4.1.0",             # Automating browsers  
     "pympler >=1.0.1",              # Memory profiling
-    "PyYAML >= 6.0.0"               # YAML Parsing
+    "PyYAML >= 6.0.0",              # YAML Parsing
+    "python-dotenv >=0.21.0",       # .env file processing
+    "expandvars>=0.9.0",            # Bash Variable Expansion
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest >=7.2.0",
+    "pytest-mock >=3.10.0",
+    "freezegun >=1.2.2",
+]
+
+[project.urls]
+homepage = "https://github.com/dgilroy/dag"
+repository = "https://github.com/dgilroy/dag"
+documentation = "https://github.com/dgilroy/dag"
+
 
 
 [build-system]
@@ -36,5 +48,5 @@ build-backend = "setuptools.build_meta"
 
 
 
-[tool.pytest.ini_options]
-addopts = "--workers 4"
+#[tool.pytest.ini_options]
+#addopts = "--workers 4"

@@ -1,13 +1,13 @@
-import gzip, dill, bz2, os
+import gzip, os, pathlib
 
 import dag
 
-ext = dag.config.CACHEFILE_EXT + ".gz"
+ext = dag.settings.CACHEFILE_EXT + ".gz"
 
 	
 class PersistenceFile:
-	def __init__(self, file_root_dir):
-		self.file_root_dir = file_root_dir.strip("/")
+	def __init__(self, root):
+		self.root = pathlib.Path(root)
 
 
 	def format_filename_chars(self, name):
@@ -15,32 +15,34 @@ class PersistenceFile:
 
 
 	def process_filepath(self, folder, filename):
-		folder = folder.lstrip("/").removeprefix(self.file_root_dir).strip("/")
 		filename = self.format_filename_chars(filename.strip("/")).removesuffix(ext) + ext
-		return f"{self.file_root_dir}/{folder}/{filename}"
+		return self.root / folder / filename
 
 
 	def exists(self, folder, filename):
 		filepath = self.process_filepath(folder, filename) 
-
-		return dag.file.file_exists(filepath, inside_dag = True)
+		return dag.file.exists(filepath)
 
 
 	def read(self, folder, filename):
+		import dill
 		filepath = self.process_filepath(folder, filename) 
 
-		with dag.file.open_in_dag(filepath, "rb", opener = gzip.open) as f:
+		with dag.file.open(filepath, "rb", opener = gzip.open) as f:
 			return dill.load(f)
 
 
 	def write(self, text, folder, filename):
+		import dill
+
 		filepath = self.process_filepath(folder, filename) 
-		filepath = dag.file.force_inside_dag(filepath)
 		
 		try:
-			with dag.file.open_in_dag(filepath, "wb", opener = gzip.open) as f:
+			with dag.file.open(filepath, "wb+", opener = gzip.open) as f:
 				dill.dump(text, f)
 
 		except TypeError as e:
-			print(f"\n\nCacheFile Write Error: {e}\nSkipping Writing CacheFile\n\n")
+			dag.echo(f"\n\nCacheFile Write Error: {e}\nSkipping Writing CacheFile\n\n")
 			os.remove(filepath)
+
+		return filepath

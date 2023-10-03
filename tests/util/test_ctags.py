@@ -191,28 +191,28 @@ def test_ctag_format_24b_no_style(ct, sys24b):
 
 
 def test_get_styles_from_ctag(ctag):
-	assert ctag("<c red bold>").styles() == ["red", "bold"]
-	assert ctag("</c red bold>").styles() == ["red", "bold"]
-	assert ctag("</c>").styles() == []
-	assert ctag("<c>").styles() == []
-	assert ctag("<c BADSTYLE bold>").styles() == ["badstyle", "bold"]
+	assert ctag("<c red bold>").styles == ["red", "bold"]
+	assert ctag("</c red bold>").styles == ["red", "bold"]
+	assert ctag("</c>").styles == []
+	assert ctag("<c>").styles == []
+	assert ctag("<c BADSTYLE bold>").styles == ["badstyle", "bold"]
 
 
 def test_is_opening_ctag(ctag):
-	assert ctag("<c>").is_opening_tag()
-	assert ctag("<c red>").is_opening_tag()
-	assert ctag("<c red bg-BOLD>").is_opening_tag()
-	assert not ctag("</c>").is_opening_tag()	
-	assert not ctag("</c red>").is_opening_tag()	
-	assert not ctag("FFF").is_opening_tag()	
+	assert ctag("<c>").is_opening_tag
+	assert ctag("<c red>").is_opening_tag
+	assert ctag("<c red bg-BOLD>").is_opening_tag
+	assert not ctag("</c>").is_opening_tag
+	assert not ctag("</c red>").is_opening_tag
+	assert not ctag("FFF").is_opening_tag
 	
 
 def test_is_closing_ctag(ctag):
-	assert not ctag("<c>").is_closing_tag()
-	assert ctag("</c>").is_closing_tag()
-	assert ctag("</c RED>").is_closing_tag()
-	assert ctag("</c RED bold>").is_closing_tag()
-	assert not ctag("FFF").is_closing_tag()	
+	assert not ctag("<c>").is_closing_tag
+	assert ctag("</c>").is_closing_tag
+	assert ctag("</c RED>").is_closing_tag
+	assert ctag("</c RED bold>").is_closing_tag
+	assert not ctag("FFF").is_closing_tag
 
 
 def test_expand_ctag(ctag):
@@ -227,27 +227,30 @@ def test_expand_ctag(ctag):
 
 
 def test_iter_ctags_in_text(ctf):
-	assert [ct.group(0) for ct in ctf.iter_ctags_in_text("<c>")] == ["<c>"]
-	assert [ct.group(0) for ct in ctf.iter_ctags_in_text("<c>"*3)] == ["<c>"]*3
-	assert [ct.group(0) for ct in ctf.iter_ctags_in_text("</c>")] == ["</c>"]
-	assert [ct.group(0) for ct in ctf.iter_ctags_in_text("</blue>")] == []
-	assert [ct.group(0) for ct in ctf.iter_ctags_in_text("<c red>wow</c><c blue>WOW</c>")] == ["<c red>", "</c>", "<c blue>", "</c>"]
-	assert [ct.group(0) for ct in ctf.iter_ctags_in_text("<c red blue>wow</c><c blue>WOW</c>")] == ["<c red blue>", "</c>", "<c blue>", "</c>"]
-	assert [ct.group(0) for ct in ctf.iter_ctags_in_text("<c red blue>wow</c blue><c blue>WOW</c>")] == ["<c red blue>", "</c blue>", "<c blue>", "</c>"]
+	assert [ct.group(0) for ct in ctags.iter_ctags_in_text("<c>")] == ["<c>"]
+	assert [ct.group(0) for ct in ctags.iter_ctags_in_text("<c>"*3)] == ["<c>"]*3
+	assert [ct.group(0) for ct in ctags.iter_ctags_in_text("</c>")] == ["</c>"]
+	assert [ct.group(0) for ct in ctags.iter_ctags_in_text("</blue>")] == []
+	assert [ct.group(0) for ct in ctags.iter_ctags_in_text("<c red>wow</c><c blue>WOW</c>")] == ["<c red>", "</c>", "<c blue>", "</c>"]
+	assert [ct.group(0) for ct in ctags.iter_ctags_in_text("<c red blue>wow</c><c blue>WOW</c>")] == ["<c red blue>", "</c>", "<c blue>", "</c>"]
+	assert [ct.group(0) for ct in ctags.iter_ctags_in_text("<c red blue>wow</c blue><c blue>WOW</c>")] == ["<c red blue>", "</c blue>", "<c blue>", "</c>"]
 
 
 def test_iter_open_ctags_in_text(ctf):
-	assert [ct.group(0) for ct in ctf.iter_open_ctags_in_text("<c red>wow</c><c blue>WOW</c>")] == ["<c red>", "<c blue>"]
-	assert [ct.group(0) for ct in ctf.iter_open_ctags_in_text("<c red blue>wow</c><c blue>WOW</c>")] == ["<c red blue>", "<c blue>"]
-	assert [ct.group(0) for ct in ctf.iter_open_ctags_in_text("<c red blue>wow</c blue><c blue>WOW</c>")] == ["<c red blue>", "<c blue>"]
+	assert [ct.group(0) for ct in ctags.iter_open_ctags_in_text("<c red>wow</c><c blue>WOW</c>")] == ["<c red>", "<c blue>"]
+	assert [ct.group(0) for ct in ctags.iter_open_ctags_in_text("<c red blue>wow</c><c blue>WOW</c>")] == ["<c red blue>", "<c blue>"]
+	assert [ct.group(0) for ct in ctags.iter_open_ctags_in_text("<c red blue>wow</c blue><c blue>WOW</c>")] == ["<c red blue>", "<c blue>"]
 
 
 def test_process_closing_ctags(ctf):
-	assert ctf.process_closing_ctags("<c red><c blue>hi") == "<c red><c blue>hi"
-	assert ctf.process_closing_ctags("<c red blue>hi</c>") == "<c red blue>hi</c>"
+	assert ctags.process_closing_ctags("<c red><c blue>hi") == "<c red><c blue>hi"
+	assert ctags.process_closing_ctags("<c red blue>hi</c>") == "<c red blue>hi</c>"
 
-	assert ctf.process_closing_ctags("<c red blue>hi</c blue>wow") == "<c red blue>hi</c><c red>wow"
-	assert ctf.process_closing_ctags("<c red blue bold>hi</c blue>wow") == "<c red blue bold>hi</c><c red><c bold>wow"
+	assert ctags.process_closing_ctags("<c red blue>hi</c blue>wow") == "<c red blue>hi</c><c red>wow"
+	assert ctags.process_closing_ctags("<c red blue bold>hi</c blue>wow") == "<c red blue bold>hi</c><c red><c bold>wow"
+
+	assert ctags.process_closing_ctags("<c blue><c blue>hi</c blue>cool") == "<c blue><c blue>hi</c><c blue>cool"
+	assert ctags.process_closing_ctags("<c blue><c blue>hi</c !blue>cool") == "<c blue><c blue>hi</c>cool"
 
 
 def test_replace_ctags(ctf):

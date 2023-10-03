@@ -8,9 +8,34 @@ ops = {
 	"<=": operator.le,
 	">": operator.gt,
 	">=": operator.ge,
-	#"=": operator.eq,
+	"=": operator.eq,
 	"==": operator.eq,
 	"!=": operator.ne,
+}
+
+opposites = {
+	"__lt__": "__gt__",
+	"__gt__": "__lt__",
+	"__ge__": "__le__",
+	"__le__": "__ge__",
+}
+
+DUNDEROPS = {
+	"__lt__": "<",
+	"__le__": "<=",
+	"__gt__": ">",
+	"__ge__": ">=",
+	"__eq__": "==",
+	"__ne__": "!=",
+}
+
+DUNDERFNS = {
+	"__lt__": operator.lt,
+	"__le__": operator.le,
+	"__gt__": operator.gt,
+	"__ge__": operator.ge,
+	"__eq__": operator.eq,
+	"__ne__": operator.ne,
 }
 
 # Turn operator into symbol
@@ -54,7 +79,7 @@ class ComparisonRecorder:
 		return True
 
 
-	def store_comparison(self, comparison_name: str, val: Any) -> StoredComparison:
+	def store_comparison(self, comparison_name: str, val: object) -> StoredComparison:
 		"""
 		If a comparison should be stored, records a comparison for future checking. Otherwise, perform the comparison
 
@@ -158,21 +183,22 @@ def sortlist(li: Sequence[Any], **kwargs) -> list[Any]:
 	if None in li:
 		has_none = True
 		li = [i for i in li if i is not None]
-		
-	bools = [i for i in li if isinstance(i, bool)]
-	li = [i for i in li if not isinstance(i, bool)]
-		
-	nums = [i for i in li if isinstance(i, (int, float))]
-	li = [i for i in li if not isinstance(i, (int, float))]
 
-	strs = [i for i in li if isinstance(i, (str))]
-	li = [i for i in li if not isinstance(i, (str))]
+	key = kwargs.get("key", lambda x: x)
+		
+	bools = [i for i in li if isinstance(key(i), bool)]
+	li = [i for i in li if i not in bools]
+		
+	nums = [i for i in li if isinstance(key(i), (int, float))]
+	li = [i for i in li if i not in nums]
 
+	strs = [i for i in li if isinstance(key(i), (str))]
+	li = [i for i in li if i not in strs]
 
 	li = sorted(li, **kwargs)
 	li = sorted(strs, **kwargs) + li
-	li = sorted(nums) + li
-	li = sorted(bools) + li
+	li = sorted(nums, **kwargs) + li
+	li = sorted(bools, **kwargs) + li
 				
 	if has_none:
 		li.insert(0, None)

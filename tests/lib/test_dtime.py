@@ -173,7 +173,7 @@ class TestDTimeInitialization:
 			assert do(year = 2000) == do(2000,1,1)
 			assert do(year = 2000, month = 1) == do(2000,1,1)
 
-			assert do(year = TESTYEAR, month = TESTMONTH, day = TESTDAY) == TESTDATE.midnight()
+			assert do(year = TESTYEAR, month = TESTMONTH, day = TESTDAY) == TESTDATE.midnight
 			assert do(year = TESTYEAR, month = TESTMONTH, day = TESTDAY, hour = TESTHOUR) == TESTDATE
 			assert do(year = TESTYEAR, month = TESTMONTH, day = TESTDAY, hour = TESTHOUR, minute = 15) == TESTDATE.replace(minute = 15)
 			assert do(year = TESTYEAR, month = TESTMONTH, day = TESTDAY, hour = TESTHOUR, minute = 15, second = 15) == TESTDATE.replace(minute = 15, second = 15)
@@ -227,8 +227,8 @@ class TestTimeSensitive:
 		assert isinstance(do.now, dtime.Now)
 
 		assert do.now() == do(datetime.datetime.now())
-		assert do.now.utc() == do(datetime.datetime.utcnow().timestamp())
-		assert do.now.timestamp() == do().now.utc().timestamp
+		assert do.now().utc == do(datetime.datetime.utcnow().timestamp())
+		assert do.now().timestamp == do().now().utc.timestamp
 
 
 	def test_dtime_delta(self, do):
@@ -258,7 +258,7 @@ class TestTimeSensitive:
 
 	def test_dtime_timestamp(self, do):
 		assert do.utc(1970).timestamp == 0
-		assert do.utc(1970, second = 1).from_utc().timestamp == 1
+		assert do.utc(1970, second = 1).from_utc.timestamp == 1
 		assert do.utc(1971).timestamp == 60*60*24*365
 
 
@@ -277,14 +277,14 @@ class TestTimeSensitive:
 		assert day._dag_cachefile_name() == f"{TESTYEAR:0>4}{TESTMONTH:0>2}{TESTDAY:0>2}"
 
 	def test_dtime_daysago(self, do,day):
-		assert day.yesterday().daysago == 1
+		assert day.yesterday.daysago == 1
 		assert day.delta(days = -1).daysago == 1
 		assert day.delta(days = -1, hours=-1).daysago == 1
 		assert day.delta(hours=-25).daysago == 1
 		assert day.delta(days = -1,  hours=-1).daysago == 1
 		assert day.delta(days = -1,  hours=-23).daysago == 2
 
-		assert day.tomorrow().daysago == -1
+		assert day.tomorrow.daysago == -1
 		assert day.delta(days = 1).daysago == -1
 
 		assert day.delta(seconds = -1).daysago == 0
@@ -296,8 +296,8 @@ class TestTimeSensitive:
 		assert day.delta(years = 1).yearsago ==  -1
 		assert day.delta(years = -1).yearsago ==  1
 
-	def test_dtime_computer_utc_offset(self, do,day):
-		assert day.computer_utc_offset() == 60*60*5
+	def test_dtime_compute_utc_offset(self, do,day):
+		assert day.compute_utc_offset() == 60*60*5
 
 	def test_dtime_utc_now(self, do):
 		assert do.utcnow().tzinfo == timezone.utc

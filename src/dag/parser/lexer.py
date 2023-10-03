@@ -1,45 +1,36 @@
-from dag.exceptions import DagContinueLoopException
+import re
+from typing import NoReturn
 
-class Token:
-	value: str = ""
-	def __repr__(self): return f"<{self.__class__.__name__}>"
-
-
-class WORD(Token):
-	def __init__(self, value): self.value = value
-	def __repr__(self): return f"<{self.__class__.__name__} {self.value}>"
+import dag
+from dag.exceptions import DagContinueLoopException, DagMultipleCommaListException
+from dag.parser import commalists, Token, WORD, tokentypes
 
 
-# List that holds the text value of tokens defined in Tokens
-tokentypes = {}
 
-def create_token_type(name, value):
-	tokentype = type(name, (Token,), {"value": value})
-	tokentypes[value] = tokentype
-	globals()[name] = tokentype # This is necessary to make multiprocess pickling work
-	return tokentype
+def token_split(text, punct, groupings = None):
+	with dag.bbtrigger("tokensplit"):
+		dl = DagLexer(wordseparators = [punct], groupings = groupings)
+		tokens = dl.lex(text)
+		if tokens and tokens[-1].value == punct:
+			tokens.append(WORD(""))
+		return [t.value for t in tokens if not t.value == punct]
+		return tokens
 
-class Tokens:
-	AND_IF = create_token_type("AND_IF", "&&")
-	OR_IF = create_token_type("OR_IF", "||")
-	PIPE = create_token_type("PIPE", "|")
-	SEMICOLON = create_token_type("SEMICOLON", ";")
-	COMMA = create_token_type("COMMA", ",")
-	SPACE = create_token_type("SPACE", " ")
-	#UNDERSCORE = create_token_type("UNDERSCORE", "_") -> Setting this as a token means "l _" won't work beacuse "_" is considered the op
+
+def is_pipe(token) -> bool:
+	return token in [Token.PIPE, Token.ATPIPE]
 
 
 
 
 class DagLexer:
-	def __init__(self, strip_trailing_spaces = False):
-		self.punctuation_chars = [";", ","]  # Chars that dont need spaces before them to become tokens
-		self.quote_chars = ['"', "'"]
-		self.container_chars = {"(": ")", "{": "}"}
+	def __init__(self, wordseparators = None, groupings = None, ignore = None):
+		self.wordseparators = wordseparators or [";", ";;", ",", " ", "|", ">", ">>", "@|", "||", "&&"]  # Chars that dont need spaces before them to become tokens
+		self.groupings = groupings or {"(": ")", "{": "}", "r/": "/", '"': '"', "'": "'", "[": "]"}
+		self.ignore = ignore or [">="] # preventing ">=" from being split into "> ="
 
-		self.strip_trailing_spaces = strip_trailing_spaces
+		self.openpunctuation = (self.wordseparators + self.ignore) | self.groupings.keys()
 
-		self.arglist_active = False
 		self.reset()
 
 
@@ -47,93 +38,217 @@ class DagLexer:
 		self.tokens = []
 		self.buffer = ""
 		self.escape_char_active = False
-		self.active_quote = ""
-		self.active_container = ""
+
+		self.active_punctuation = ""
+		self.active_grouping = ""
+		self.active_grouping_count = 0
 		
 
 	def add_token(self, text):
+		text = text.strip()
+
+		if not text:
+			return
+
 		if text in tokentypes:
-			self.tokens.append(tokentypes[text]())
+			self.tokens.append(tokentypes[text])
 		else:
 			self.tokens.append(WORD(text))
 
 
-	def handle_escape_char_active(self):
-		self.escape_char_active = False
+	def process_punctuation(self):
+		def get_candidates(punctuation):
+			nonlocal trimmedbuffer, ch
 
-	def handle_escape_slash(self):
-		self.escape_char_active = True
+			candidates = [p for p in initial_candidates if p.startswith(punctuation)]
 
-	def handle_open_grouping(self):
-		pass
+			if candidates:
+				return candidates
+			else:
+				if self.active_punctuation:
+					sorted_candidates = sorted([p for p in initial_candidates if p.startswith(self.active_punctuation)], key = lambda x: len(x))
+					trimmedbuffer = self.buffer[:-1]
 
-	def handle_space(self):
-		if self.buffer:
-			self.add_token(self.buffer)
+					for candidate in sorted_candidates:
+						if dag.strtools.text_ends_with_punctuation(trimmedbuffer, candidate):
+							candidates = [candidate]
 
-			if not self.strip_trailing_spaces:
-				self.add_token(" ")
+					if candidates:
+						ch = ""
+						return candidates
 
-			self.buffer = ""
+					self.active_punctuation = ""
+					return get_candidates(ch)
 
-	def handle_punctuation(self, c):
-		if self.buffer:	# In case there are multipe punct marks in a row
-			self.add_token(self.buffer)
-			self.buffer = ""
-		self.add_token(c)
+			return []
 
-	def handle_quotechar(self, c):
-		if self.active_quote:
-			self.active_quote = ""
-			if self.buffer:
-				self.add_token(self.buffer + c)
-				self.buffer = ""
-				raise DagContinueLoopException()
+
+		if not self.buffer:
+			return
+
+		ch = self.buffer[-1]
+
+		initial_candidates = self.openpunctuation
+
+		if self.active_grouping:
+			initial_candidates = list(set([self.groupings[self.active_grouping], self.active_grouping]))
+
+		trimmedbuffer = self.buffer
+
+		candidates = get_candidates(self.active_punctuation + ch)
+
+		if candidates:
+			self.active_punctuation += ch
+
+		if len(candidates) == 1 and dag.strtools.text_ends_with_punctuation(trimmedbuffer, candidates[0]):
+			self.add_punctuation_token(candidates[0], trimmedbuffer)
+
+
+	def add_punctuation_token(self, punctuation, trimmedbuffer = None):
+		trimmedbuffer = trimmedbuffer or self.buffer
+		self.active_punctuation = "" #We've found the punctuation so turn off search
+
+		if self.active_grouping:
+			# IF punctuation closes the group: Close the group
+			if punctuation == self.groupings[self.active_grouping]:
+				self.active_grouping_count -= 1
+
+				# IF not nested: Turn off active grouping
+				if self.active_grouping_count == 0:
+					self.active_grouping = ""
+			else:
+				self.active_grouping_count += 1
 		else:
-			self.active_quote = c
+			if punctuation in self.wordseparators:
+				if prepunctuation := trimmedbuffer[:-len(punctuation)]:
+					self.add_token(prepunctuation)
 
-	def handle_containerchar(self, c):
-		if self.active_container:
-			self.active_container = ""
-			if self.buffer:
-				self.add_token(self.buffer + c)
-				self.buffer = ""
-				raise DagContinueLoopException()
-				return True
-		else:
-			self.active_container = self.container_chars[c]
+				self.add_token(punctuation)
+				punctidx = self.buffer.rfind(punctuation)
+				punctlen = len(punctuation)
+				self.buffer = self.buffer[punctidx + punctlen:]
+				self.process_punctuation()
+
+			if punctuation in self.groupings:
+				self.active_grouping = punctuation
+				self.active_grouping_count += 1
 
 
 	def lex(self, text):
 		self.reset()
 
-		for c in text:
-			skip = False
-
-			try:
-				if self.escape_char_active:
-					self.handle_escape_char_active()
-				elif c == "\\": # note: does not push the \ into buffer, but if there's \\, the 2nd will get put into buffer
-					self.handle_escape_slash()
-				elif (self.active_quote and c != self.active_quote) or (self.active_container and c != self.active_container):
-					self.handle_open_grouping()
-				elif c == " ":
-					self.handle_space()
-					continue
-				elif c in self.punctuation_chars:
-					self.handle_punctuation(c)
-					continue
-				elif c in self.quote_chars:
-					self.handle_quotechar(c)
-				elif c in self.container_chars or c == self.active_container:
-					self.handle_containerchar(c)
-			except DagContinueLoopException:
+		for ch in text:
+			if self.escape_char_active:
+				self.buffer += ch
+				self.escape_char_active = False
 				continue
 
+			elif ch == "\\": # note: does not push the \ into buffer, but if there's \\, the 2nd will get put into buffer
+				self.escape_char_active = True
+				self.active_punctuation = ""
+			elif self.active_grouping:
+				pass
 
-			self.buffer += c
+			self.buffer += ch
+			self.process_punctuation()
+
+		if self.buffer:
+			for i in range(len(self.buffer)):
+				if self.buffer[i:] in self.wordseparators:
+					self.add_punctuation_token(self.buffer[i:])
 
 		if self.buffer:
 			self.add_token(self.buffer)
 
-		return self.tokens
+		# If text ends with space, append an empty word (it implies the start of a new argy)
+		if text.endswith(" "):
+			self.tokens.append(WORD(""))
+
+		return PostLexer(self.tokens).process()
+
+
+class PostLexer:
+	def __init__(self, tokens):
+		self.tokens = tokens
+		self.proctokens = tokens[:]
+		self.commalist = commalists.CommaList()
+
+		self.processedtokens = [] # Token that are done being processed
+		self.token_buffer = [] # Token who are still being processed
+
+
+	def process_commalist(self, token: Token) -> None:
+		"""
+		Checks whether the token should be placed into the commalist
+
+		:param token: The token to analyze
+		:returns: Nothing
+		"""
+
+		match token:
+			# If token is a comma: Attempt to put into commalist
+			case Token.COMMA:
+				self.process_comma(token)
+			# elif token is WORD: Maybe put it into commalist
+			case WORD():
+				self.maybe_put_into_commalist(token)
+
+
+	def process_comma(self, token: Token) -> NoReturn:
+		"""
+
+		"""
+		if self.commalist.closed:
+			raise DagMultipleCommaListException("Can't have multiple Comma-Lists in a single Input Command")
+
+		if not self.commalist:
+			last_word = self.processedtokens.pop()
+			self.commalist.append(last_word)
+
+		self.commalist.listening = True
+		raise DagContinueLoopException()
+
+
+	def maybe_put_into_commalist(self, token: Token):
+		# If commalist has been populated already and hasn't been closed: Maybe append or maybe close list
+		if self.commalist and not self.commalist.closed:
+			# If comma list is listening for next word: Append word to commalist, turn of listening, and continue
+			if self.commalist.listening:
+				self.commalist.append(token)
+				self.commalist.listening = False
+				raise DagContinueLoopException()
+			# Else, comma list isn't listening for next word: indicate comma list is finished
+			else:
+				self.commalist.closed = True
+				self.processedtokens.append(self.commalist)
+				self.processedtokens.append(token)
+				raise DagContinueLoopException()
+
+
+
+	def process(self):
+		if not dag.ctx.commalist_active:
+			return self.tokens
+
+		while self.proctokens:
+			try:
+				token = self.proctokens.pop(0)
+				self.process_commalist(token) # <- Raises Contine if word put into commalist
+				self.processedtokens.append(token)
+			except DagContinueLoopException:
+				continue
+
+		# If command has trailing comma (e.g.: "1,2,3,"): Add the commalist
+		if self.commalist and self.commalist.listening:
+			self.processedtokens.append(self.commalist)
+
+		return self.processedtokens
+
+
+@dag.oninit
+def _():
+	@dag.cmd
+	def commalist(text = "surprise 1, 2,3,4, 5 6"):
+		with dag.bbtrigger("commalist"), dag.ctx("commalist_active"):
+			dag.echo(text)
+			return DagLexer().lex(text)

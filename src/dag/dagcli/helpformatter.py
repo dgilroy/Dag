@@ -1,13 +1,20 @@
 import inspect
 
+import dag
 from dag.util import styleformatter
 from dag.util import nabbers
 
-from dag.persistence import CacheFile
+from dag.cachefiles import cachefiles
 from dag.dagcmd_exctx import DagCmdExecutionContext
+from dag.parser import inputobjects
 
 
-def generate_help_text(	):
+def generate_help_text(inputobject):
+	dagcmd = None
+	
+	if isinstance(inputobject, inputobjects.InputIdentifier):
+		dagcmd = inputobject.identifier
+
 	formatter = styleformatter.DagStyleFormatter()
 	formatter.add_message("MODULE", margin_bottom = 1)
 
@@ -22,20 +29,20 @@ def generate_help_text(	):
 		formatter.add_row("Base URL", f"{dagcmd.settings.baseurl}", padding_left = padleft, id = "dagcmdinfo")
 		if dagcmd.settings.doc:
 			formatter.add_row("API Documentation", f"{dagcmd.settings.doc}", padding_left = padleft, id = "dagcmdinfo")
-		formatter.add_row("Response Type", f"{dagcmd.settings.response_parser.__name__}", padding_left = padleft, id = "dagcmdinfo")
+		formatter.add_row("Response Type", f"{dagcmd.settings.response_parser.__class__.__name__}", padding_left = padleft, id = "dagcmdinfo")
 		if dagcmd.settings.auth:
 			formatter.add_row("Auth", f"{dagcmd.settings.auth.__class__.__name__}", padding_left = padleft, id = "dagcmdinfo")
 		
 	formatter.add_row()
 	
 	# Get dagcmds and collections
-	collections = sorted(dagcmd.collections.get_collections(), key = lambda x: x.fn_name)				
-	dagcmds = [dagcmd for dagcmd in dagcmd.subcmdtable.values() if dagcmd != dagcmd.settings.default_cmd]
-	dagcmds = sorted(dagcmds, key = lambda x: x.fn_name)
+	collections = sorted(dagcmd.collectioncmds.get_collections(), key = lambda x: x.name)				
+	dagcmds = [dagcmd for dagcmd in dagcmd.dagcmds.values() if dagcmd != dagcmd.root.default_cmd]
+	dagcmds = sorted(dagcmds, key = lambda x: x.name)
 	dagcmds = [*filter(lambda x: x not in collections, dagcmds)]
 	
 	# Output Default Command
-	if defaultcmd := dagcmd.settings.default_cmd:
+	if dagcmd == dagcmd.root.default_dagcmd:
 		formatter.add_message("DEFAULT COMMAND", margin_bottom = 1)
 		formatter = print_command_help(defaultcmd, formatter, default = True)
 
@@ -50,7 +57,7 @@ def generate_help_text(	):
 
 	# Output DagCmds Info
 	if dagcmds:
-		other = "OTHER " if dagcmd.settings.default_cmd else ""
+		other = "OTHER " if dagcmd == dagcmd.root.default_dagcmd else ""
 		formatter.add_message(f"{other}COMMANDS", margin_bottom = 1)		
 		for dagcmd in dagcmds:	
 			formatter = print_command_help(dagcmd, formatter)
@@ -59,7 +66,7 @@ def generate_help_text(	):
 
 
 def print_collection_help(coll, formatter, padding_left = 6):
-	collname = coll.fn_name
+	collname = coll.name
 
 	# Info related to: CACHEING #
 	cacheinfo = "Not Cacheable"
@@ -71,7 +78,7 @@ def print_collection_help(coll, formatter, padding_left = 6):
 
 		exctx = DagCmdExecutionContext(dagcmd = coll, parsed = {})
 
-		if CacheFile.exists_from_dagcmd_exctx(exctx):
+		if cachefiles.exists_from_dagcmd_exctx(exctx):
 			cachecolor = "darkolivegreen1"
 			items = coll()
 			total = len(items)
@@ -79,11 +86,8 @@ def print_collection_help(coll, formatter, padding_left = 6):
 
 	cacheinfo = f"(<c u>{cacheinfo}</c u>)"
 
-	# Info related to: INDEXING #
-	indexed = "(Alist)" if coll.settings.idx else ""
-
 	formatter.col(0, style = "b", greedy = False, id = "collinfo").col(2, style = cachecolor, id = "collinfo")
-	formatter.add_row(collname, indexed, cacheinfo, padding_left = padding_left, id = "collinfo")
+	formatter.add_row(collname, cacheinfo, padding_left = padding_left, id = "collinfo")
 
 
 	# Info related to: VALUE #
@@ -93,7 +97,7 @@ def print_collection_help(coll, formatter, padding_left = 6):
 	if val := coll.settings.get("value"):
 		if isinstance(val, nabbers.Nabber):
 			action = val.__class__.__name__.upper()
-			value = f"{action} {coll.dagcmd.settings.baseurl}{val.val}"
+			value = f"{action} {coll.settings.baseurl}{val.__class__.__name__}"
 
 		formatter.add_row("Value: ", value, id = "colsettings", padding_left = padding_left + 4, style = "b")
 
@@ -109,7 +113,7 @@ def print_collection_help(coll, formatter, padding_left = 6):
 
 def print_command_help(dagcmd, formatter, padding_left = 6, default = False):
 	formatter.col(1, "bold")
-	dagcmdname = f"({dagcmd.fn_name})" if default else dagcmd.fn_name
+	dagcmdname = f"({dagcmd.name})" if default else dagcmd.name
 	
 	dagargcache = ""
 	try:
@@ -120,7 +124,7 @@ def print_command_help(dagcmd, formatter, padding_left = 6, default = False):
 		breakpoint()
 		pass
 		
-	formatter.add_row(f"{dagcmd.dagcmd.name} <c bold>{dagcmdname}</c> {get_dagargstring(dagcmd)}", padding_left = padding_left)
+	formatter.add_row(f"{dagcmd.name} <c bold>{dagcmdname}</c> {get_dagargstring(dagcmd)}", padding_left = padding_left)
 	
 	help_text = (inspect.getdoc(dagcmd.fn) or dagcmd.settings.help or "")
 	if help_text:
@@ -131,7 +135,7 @@ def print_command_help(dagcmd, formatter, padding_left = 6, default = False):
 		
 		if dagarg.settings.type:
 			dagargtype = dagarg.settings.type.__name__
-		elif dagarg.settings.flag:
+		elif "flag" in dagarg.settings:
 			dagargtype = type(dagarg.settings.flag).__name__
 		elif dagargname in dagcmd.defaults:
 			dagargtype = type(dagcmd.defaults[dagargname]).__name__

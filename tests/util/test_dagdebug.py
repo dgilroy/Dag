@@ -1,7 +1,7 @@
 import traceback, sys, subprocess, cmd
 import pytest
 from dag.exceptions import DagError
-from dag.util import dagdebug, historyfile, editors
+from dag.util import dagdebug, historyfiles, editors
 
 
 @pytest.fixture

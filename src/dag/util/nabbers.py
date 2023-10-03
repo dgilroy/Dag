@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import operator, abc, os
+import operator, abc, os, copy, sys
 from typing import Any, TYPE_CHECKING
 
 import dag
-from dag.util.attribute_processors import MagicMethodAccessRecorder, AttributeAccessIgnorer, AttributeAccessRecord
+from dag.util import attribute_processors
 
 
 
 
-def nab_if_nabber(item: Any) -> Any:
+def nab_if_nabber(item: object) -> object:
 	"""
 	This nabs any nabbable elements, and ignores them otherwise
 
@@ -25,15 +25,20 @@ def nab_if_nabber(item: Any) -> Any:
 	:returns: The nabbed item, if applicable, otherwise the original given item
 	"""
 
+	origitem = item
+
 	if isinstance(item, Nabber):
 		return nab_if_nabber(item.nab())
-	elif isinstance(item, Nabbable):
-		return NabbableHelperMethods.nab_nabbable(item)
 
 	elif isinstance(item, (list, tuple)):
 		tempitems = []
+
 		for el in item:
 			tempitems.append(nab_if_nabber(el))
+
+		# Done so that normal lists return themselves so that they can be appended, etc
+		if item == tempitems:
+			return item
 
 		return item.__class__(tempitems)
 
@@ -46,272 +51,148 @@ def nab_if_nabber(item: Any) -> Any:
 
 
 
-
-class NabbableHelperMethods:
+class Nabber(attribute_processors.AttrCallframeRecorder):
 	"""
-	This is to help keep the attribute footprint of nabbables small
-	"""
-
-	@classmethod
-	def maybe_store_attribute(cls, attr, nabbable):
-		if is_should_store_attribute():
-			return cls.store_attribute(attr, nabbable)
-
-		return object.__getattribute__(nabbable, attr)
-
-
-	@classmethod
-	def store_attribute(cls, attr, nabbable):
-		accesslist_nabber = AttrAccessListNabber(root = nabbable)
-		accesslist_nabber.append_access_record(attr)
-		return accesslist_nabber
-
-
-	@staticmethod
-	def nab_nabbable(nabbable: Nabbable, stored_attrs = None):
-		nabber = Nabber()
-		nabber._nab = nabbable._nab
-		return nabber.nab(stored_attrs or [])
-
-
-def is_should_store_attribute():
-	return dag.ctx.DAG_DECORATOR_ACTIVE
-
-
-def format_val(val):
-	val = nab_if_nabber(val)
-
-	try:
-		for arg in dag.ctx.parsed.values():	
-			if isinstance(arg, dag.DTime) and (formatstr := dag.ctx.active_dagcmd.settings.dateformat) and arg.formatstr == dag.DTime.default_formatstr:
-				arg.formatstr = formatstr
-
-		return val.format(**(dag.ctx.parsed or {}))
-	except (AttributeError, TypeError) as e:
-		return val
-
-
-
-class NabberBase:
-	pass
-
-
-
-class Nabbable(NabberBase, metaclass = MagicMethodAccessRecorder):
-	"""
-	A lightweight mixin for nabbers that don't need to modify Nabber internal mechanics
-	This stores attrs into an AttrAccessList, and implements a _nab method that handles nabbing
-	"""
-
-	def __getattr__(self, attr):
-		return NabbableHelperMethods.maybe_store_attribute(attr, self)
-
-	def _nab(self):
-		return self
-
-
-
-class Nabber(NabberBase, dag.dot.DotAccess, metaclass = MagicMethodAccessRecorder):
-	"""
-	Nabbers allow for lazy evaluation of items while dagmods are being imported
+	Nabbers allow for lazy evaluation of items while dagapps are being imported
 	Lazily-stored items are evaluated when called later while program is running
 
 	:abstractmethod: _nab
 	"""
 
-	always_store_attr = False
-
-	def __init__(self):
-		"""
-		An instance of a Nabber. Nabbers can be given values that will be formatted against parsed args
-		So, if "date" is a parsed arg, and val is "{date}", then the val will be turned into that date arg value
-
-		:param val: The value to evaluate before nabbing
-		"""
-
-		# Used for drilling later
-		self.stored_attrs = []
-		
-
-	def nab(self, stored_attrs: Optional[list[AttributeAccessRecord]] = None) -> Any:
+	def nab(self) -> Any:
 		"""
 		Initiates nabbing sequence
 
 		:returns: The nabbed item
 		"""
 
-		stored_attrs = stored_attrs or self.stored_attrs
-
 		item = self._nab()
-
-		if self.is_should_process_stored_args(item):
-			return self.process_stored_attrs(item, stored_attrs)
-
-		return item
+		return self._process_stored_attrs(item)
 
 
-	def is_should_store_attribute(self):
-		return self.always_store_attr or is_should_store_attribute() # Done this way so subclasses may be able to override this in the future
+	def _process_stored_attrs(self, item: object) -> object:
+		return attribute_processors.process_stored_attrs(self, item)
 
 
-	def is_should_process_stored_args(self, item):
-		return True
-
-
-	def process_stored_attrs(self, item, stored_attrs):
-		for attr in stored_attrs:
-			item = attr.get_item(item)
-
-		return item
+	def _process_root(self):
+		return self._nab()
 
 
 	def _nab(self): 
 		return self	# Allows for mixins to more-easily incorporate
 
 
-	def __getattr__(self, attr):
-		return self.maybe_store_attribute(attr)
 
-		
-	def format_val(self, val):
-		return format_val(val) # Done this way so that Nabber subclasses may be able to override this in the future
+class SimpleNabber(Nabber):
+	def __init__(self, item):
+		self.item = item
 
-		
-	def maybe_store_attribute(self, attr):
-		if self.is_should_store_attribute():
-			return self.store_attribute(attr)
-
-		return object.__getattribute__(self, attr)
+	def _nab(self):
+		return self.item
 
 
-	def store_attribute(self, attr):
-		nabber = self.get_nabber_for_storing()
-		nabber.append_access_record(attr)
-		return nabber	
+
+#class DagNabber(Nabber):
+class DagNabber(Nabber):
+	nabbed_item = dag.UnfilledArg
 
 
-	def append_access_record(self, attr):
-		self.stored_attrs.append(AttributeAccessRecord(attr))
+	def _is_skip_store_attribute_on_call(self):
+		# If no stored args and nabbed_item is unfilled, then assume this is being used as dag.nab(BLAH) for storing the BLAH
+		return not self._stored_attrs and self.nabbed_item == dag.UnfilledArg
 
 
-	def get_nabber_for_storing(self):
-		return AttrAccessListNabber(root = self)
-
-
-	def __call__(self, *args, **kwargs):
-		if self.is_should_store_attribute():
-			nabber = self
-
-			if not self.stored_attrs:
-				nabber = self.get_nabber_for_storing()
-				nabber.append_access_record("__call__")
-
-			last_access_record = nabber.stored_attrs[-1]
-			last_access_record.is_called = True
-			last_access_record.args = args
-			last_access_record.kwargs = kwargs
-
+	def _do_call(self, *args, **kwargs):
+		if args and not self._stored_attrs and self.nabbed_item == dag.UnfilledArg:
+			nabber = copy.copy(self)
+			nabber.nabbed_item = args[0]
 			return nabber
 
-		breakpoint()
-		pass
-
-
-
-class AttrAccessListNabber(Nabber):
-	def __init__(self, root = None):
-		super().__init__()
-		self.root = root
+		return super().do_call(*args, **kwargs)
 
 
 	def _nab(self):
-		if isinstance(self.root, Nabber):
-			return self.root.nab(self.stored_attrs)
-		elif isinstance(self.root, Nabbable):
-			return NabbableHelperMethods.nab_nabbable(self.root, self.stored_attrs)
+		if self.nabbed_item == dag.UnfilledArg:
+			return dag
 
-		raise ValueError("Root Nabber must be a Nabber")
+		return self.nabbed_item
 
 
-	def get_nabber_for_storing(self):
-		return self
+	def __bool__(self):
+		return bool(self.nabbed_item) if self.nabbed_item != dag.UnfilledArg else True
 
 
-	def process_stored_attrs(self, item, stored_attrs):
-		# passing stored_attrs in nab() makes the root process handle this, so just return item
-		return item
-		
-
-
-
-
-class DagNabber(MagicMethodAccessRecorder):
-	def __getattr__(cls, attr):
-		return getattr(nab(dag), attr)
-
-	def __dir__(cls):
+	def __dir__(self):
 		return dir(dag)
 
 
 
-class nab(Nabbable, metaclass = DagNabber):
-	def __init__(self, value):
-		self.value = value
-
-	def __getattr__(self, attr):
-		nabberlist = NabbableHelperMethods.store_attribute(attr, self)
-		nabberlist.always_store_attr = True # make dag.nab special in that it generates nabbers whether or not @decorators active
-		return nabberlist
-
-
-	def __call__(self, *args, **kwargs):
-		return self.__getattr__("__call__")(*args, **kwargs)
-
-
-	def _nab(self):
-		return format_val(self.value)
-
-	def __bool__(self):
-		return bool(self.value)
-
-
-
-
-class _DagmodNabber(Nabber):
-	def _nab(self):
-		return dag.ctx.active_dagcmd.settings._dag_thisref
-
-
-
-class ResponseNabbable(Nabbable):
+class ResponseNabber(Nabber):
+#class ResponseNabber(Nabber):
 	def _nab(self):
 		if "active_response" in dag.ctx:
 			return dag.ctx.active_response
 
-		return AttributeAccessIgnorer() # This is done so that calls like response.blah.blah() don't complain like it would if this were returning True
+		return attribute_processors.AttributeAccessIgnorer() # This is done so that calls like response.blah.blah() don't complain like it would if this were returning True
 
-		#breakpoint()
-		#return True
 
-	"""
-	def process_stored_attrs(self, item, stored_attrs):
-		if "active_response" not in dag.ctx:
-			breakpoint()
-			return True
+class ArgsNabber(Nabber):
+	argsval = dag.UnfilledArg
 
-		return super().process_stored_attrs(item, stored_attrs)
-	"""
+	def _nab(self):
+		match self.argsval:
+			case int():
+				return list(dag.ctx.parsed.values())[self.argsval]
+			case str():
+				return dag.ctx.parsed[self.argsval]
+			case _:
+				return dag.DotDict(dag.ctx.parsed or {})
+
+
+	def __call__(self, *args, **kwargs):
+		if len(args) == 1 and isinstance(args[0], int) and not self._stored_attrs:
+			newnabber = copy.copy(self)
+			newnabber.argsval = args[0]
+			return newnabber
+
+		with dag.ctx(callframe_nback = 5):
+			return super().__call__(*args, **kwargs)
+
+
+
+class ResourcesNabber(ResponseNabber):
+	def _process_stored_attrs(self, item):
+		if "active_response" in dag.ctx or "active_resource" in dag.ctx:
+			if not dag.ctx.active_resource: # Currently assumes active_resource isn't set when all resources need to be processed
+				responses = []
+
+				for resources in item:
+					responses.append(super()._process_stored_attrs(resources))
+
+				return all(responses)
+
+			else: # TO BE USED for more complex label creation
+				return super()._process_stored_attrs(dag.ctx.active_resource)
+
+		return item
+
+
+	def _nab(self):
+		return dag.ctx.active_resource or super()._nab()
+
+
+	def __call__(self, *args, **settings):
+		#breakpoint("final" in args, trigger = "nhlgames")
+		with dag.ctx(callframe_nback = 5):
+			return super().__call__(*args, **settings)
+
 
 
 # list of nabbers
-this = _DagmodNabber()
-response = ResponseNabbable()
-
-
-
-
-
-
+nab = DagNabber()
+response = ResponseNabber()
+args = ArgsNabber()
+resources = ResourcesNabber()
 
 
 

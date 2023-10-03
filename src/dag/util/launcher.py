@@ -1,31 +1,29 @@
-import shlex, re
+import shlex, re, pathlib
+from subprocess import run
 
 import dag
-from dag.lib import browsers
 from dag.util.mixins import DagLaunchable
+
+
+
+def get_browser(browser = None):
+	if browser is None:
+		browser = dag.settings.BROWSER or dag.getenv.BROWSER or ""
+	else:
+		browser = browser.cli_name
+
+	name = pathlib.Path(browser).name.removesuffix(".exe").upper()
+
+	return dag.browsers.registered_browsers.get(name, dag.browsers.CHROME)
 
 
 def is_url(text):
 	return re.match("^https?://", str(text))
 
  
-def launch_url(url):
-	from subprocess import run # Import here to speed up import
-	
+def launch_url(url):	
 	launcher = dag.get_platform().launcher
 	run(shlex.split(f"{launcher} {url}"))
-
-
-def launch_in_chrome(url):
-	browsers.CHROME.open_via_cli(url)
-
-
-def launch_in_firefox(url):
-	browsers.FIREFOX.open_via_cli(url)
-
-
-def launch_in_lynx(url):
-	browsers.LYNX.open_via_cli(url)
 
 
 def get_item_url(item):
@@ -33,12 +31,16 @@ def get_item_url(item):
 
 	if isinstance(item, DagLaunchable):
 		url = item._dag_launch_item()
+	elif not isinstance(url, str):
+		with dag.passexc():
+			url = dag.getsettings(item).launch
+			with dag.passexc():
+				url = url.format(**item)
 
-	elif not isinstance(item, str) or not is_url(item):
-		raise dag.DagError(f"Item must be DagLaunchable or a string URL")
+	if not isinstance(url, str) or not is_url(url):
+		raise dag.DagError(f"Item must be DagLaunchable or a string URL (received: \"{url}\")")
 
 	return url
-
 
 
 def do_launch(item, browser, return_url = False):
@@ -49,33 +51,34 @@ def do_launch(item, browser, return_url = False):
 		return url
 
 	try:
-		if browser == browsers.LYNX:
-			launch_in_lynx(url)
-		elif browser == browsers.CHROME:
-			launch_in_chrome(url)
-		else:
-			launch_url(url)
+		dag.echo(f"LAUNCHING {url}")
 
-		return url
+		with dag.hooks.do_pre_post("launch", url, item, items = item):
+		#with dag.hooks.do_pre_post("launch"):
+			dag.hooks.do("launch", url, item, items = item)
+			if browser is not None:
+				return browser.open_via_cli(url)
+			else:
+				launch_url(url)
+
+			return url
 	except OSError as e:
-		return print('browser launch command exception: ', e)
+		return dag.echo('browser launch command exception: ', e)
 
 
 
-class Launch:
+class Launcher:
 	def __init__(self, browser = None):
-		self.browser = browser or dag.config.DEFAULT_BROWSER
+		self.browser = get_browser(browser)
 
 	def __call__(self, item, browser = None, return_url = False):
 		return do_launch(item, browser or self.browser, return_url)
 
 	@property
-	def FIREFOX(self): return Launch(browsers.FIREFOX)
+	def FIREFOX(self): return type(self)(dag.browsers.FIREFOX)
 
 	@property
-	def CHROME(self): return Launch(browsers.CHROME)
+	def CHROME(self): return type(self)(dag.browsers.CHROME)
 
 	@property
-	def LYNX(self): return Launch(browsers.LYNX)
-
-launch = Launch()
+	def LYNX(self): return type(self)(dag.browsers.LYNX)

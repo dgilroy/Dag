@@ -1,10 +1,6 @@
 import re, urllib, sys
-from functools import partial
 
 import dag
-from dag.lib import concurrency
-from dag.persistence import CacheFile
-from dag.responses import parse_response_item, registered_parsers
 from dag.io.dagio import IOMethod, IOSession
 
 
@@ -19,7 +15,7 @@ class HttpCall(IOSession):
 	group = "http"
 
 	def process_settings(self, settings):
-		settings.setdefault("response_parser", dag.JSON)
+		settings.setdefault("response_parser", dag.ctx.active_dagcmd.settings.response_parser or dag.JSON)
 		return settings
 
 
@@ -28,7 +24,7 @@ class HttpCall(IOSession):
 
 	def process_targets(self):
 		urls = self.targets
-		return [dag.ctx.active_dagcmd.settings.baseurl + u if not re.search(r'^http.?://', u) else u for u in urls]
+		return [(dag.ctx.active_dagcmd.settings.baseurl or "") + u if not re.search(r'^http.?://', u) else u for u in urls]
 
 
 	def process_bytes(self, response):
@@ -36,7 +32,10 @@ class HttpCall(IOSession):
 
 
 	def prepare_response_for_parsing(self, response):
-		return response.text
+		try:
+			return response.text
+		except AttributeError:
+			return response
 
 
 	def process_action(self):
@@ -44,7 +43,12 @@ class HttpCall(IOSession):
 
 
 	def do_action(self, url, **kwargs):
-		sess = self.io_sess
+		dag.bb.pre_dagcmd_value()
+		if dag.settings.offline:
+			dag.echo("<c red u / Dag set to offline: No action taken>")
+			return dag.Response("")
+
+		sess = kwargs.get("session", self.io_sess)
 
 		sess.headers.update(kwargs.get("headers", {}))
 		sess.params.update({key: str(value) for key, value in kwargs.get("params", {}).items()})
@@ -61,6 +65,11 @@ class HttpCall(IOSession):
 		auth = dag.ctx.active_dagcmd.settings.auth if not dag.ctx.setting_token else None
 
 		response = self.action(url, json = sess.json or None, data = sess.data, files = sess.files, auth = auth, verify = sess.verify)
+
+		if kwargs.get("pager"):
+			kwargs.get("pager").run_pager(url, response)
+			breakpoint()
+			pass
 
 		status_code = response.status_code
 
@@ -97,32 +106,36 @@ class HttpCall(IOSession):
 
 get = IOMethod(None, "get", group = "http", session_class = HttpCall)
 post = IOMethod(None, "post", group = "http", session_class = HttpCall)
-put = IOMethod(None, "post", group = "http", session_class = HttpCall)
-delete = IOMethod(None, "post", group = "http", session_class = HttpCall)
-head = IOMethod(None, "post", group = "http", session_class = HttpCall, attr = "headers")
+put = IOMethod(None, "put", group = "http", session_class = HttpCall)
+delete = IOMethod(None, "delete", group = "http", session_class = HttpCall)
+head = IOMethod(None, "head", group = "http", session_class = HttpCall, attr = "headers")
 
 
 
 
-@staticmethod
 def dict_to_querystring(dic):
 	return urllib.parse.urlencode(dic)
 
 
-@staticmethod
+def postencode(msg):
+	return urllib.parse.quote_plus(msg) # quote_plus encodes form values so that spaces are +'s.
+
+
 def urlencode(msg):
-	return urllib.parse.quote_plus(msg)
+	return urllib.parse.quote(msg) 		# Turns spaces into %20
 
 
-def get_file(url, filename, **kwargs): # Not sure how to get filename from URL for instances where URL doesn't match download file name, like V downloads
-	r = get(url, stream = True, raw = True, **kwargs)
 
-	#filename = None
+def get_file(url, filename, getter = None, directory = ".", **kwargs): # Not sure how to get filename from URL for instances where URL doesn't match download file name, like Vision downloads
+	getter = getter or get
+	r = getter(url, stream = True, raw = True, **kwargs)
+
+	filepath = dag.Path(directory) / filename
 	
 	if r.status_code == 200:
-		filename = dag.file.filename_avoid_overwrite(filename)
+		filename = dag.file.filename_avoid_overwrite(filepath)
 
-		with open(filename, 'wb') as f:
+		with dag.file.open(filename, 'wb') as f:
 			for chunk in r.iter_content(1024):
 				f.write(chunk)
 
@@ -158,6 +171,10 @@ class DagHttpSession(dag.DotAccess):
 			self.session.__exit__()
 
 
+	def get_file(self, *args, **kwargs):
+		return get_file(*args, session = self, **kwargs)
+
+
 	def __getattr__(self, value, default = None):
 		return getattr(sys.modules[__name__], value, default) or getattr(self.session, value, default)
 
@@ -165,3 +182,40 @@ class DagHttpSession(dag.DotAccess):
 
 def session(*args, **kwargs):
 	return DagHttpSession(*args, **kwargs)
+
+
+
+def is_url(text: str) -> re.Match | None:
+	return re.match("^(https?|ftp)://", text)
+
+
+class Pager:
+	def __init__(self, datagetter, **params):
+		self.datagetter = datagetter
+		self.params = params
+
+
+	def run_pager(self, url, response):
+		with dag.ctx(pager_active = True):
+			data = dag.drill(response, self.datagetter)
+			urls = [url]
+
+			paramvals = {}
+
+			for name, value in self.params.items():
+				breakpoint()
+				pass
+
+			breakpoint()
+			pass
+
+
+
+def inputfill_param(infodict):
+	value = "{"
+
+	for k,v in infodict.items():
+		value += f'"{k}":"{v}",'
+
+	value = "&_InputIdFillValues=" + dag.urlencode(value.rstrip(",") + "}")
+	return value

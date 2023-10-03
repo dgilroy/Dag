@@ -4,14 +4,41 @@ import datetime, time, re, operator, calendar
 from datetime import timezone, timedelta
 from typing import Optional, Union, NoReturn
 
-import dateutil
-from dateutil import tz
-from dateutil import parser as dateutilparser
-from dateutil.relativedelta import relativedelta
-
 
 # A function that returns the current time in milliseconds as an int (as opposed to milliseconds being a decimal)
 current_milli_time = lambda: int(round(time.time() * 1000))
+current_micro_time = lambda: int(round(time.time() * 1000000))
+
+
+def humanize_milliseconds(milliseconds: int, ndigits: int = 3) -> str:
+	"""
+	Turns number of milliseconds into readable "ms" or "s" for seconds
+
+	:param milliseconds: The number of milliseconds to humanize
+	:param ndigits: The number of digits to round the milliseconds to
+	:returns: The humanized string, (e.g. 1000 -> "1s")
+	"""
+	suffix = "ms"
+
+	if milliseconds > 1000:
+		suffix = "s"
+		milliseconds /= 1000
+
+	time = round(milliseconds, ndigits)
+
+	return f"{time}{suffix}"
+
+
+def humanize_microseconds(microseconds: int, ndigits: int = 3) -> str:
+	"""
+	Turns the number of microseconds into a readable amount of milliseconds or seconds
+
+	:param microseconds: The number of microseconds to humanize
+	:param ndigits: The number of digits to round the result to
+	:returns: The humanized string (e.g. 1000 -. "1ms")
+	"""
+	return humanize_milliseconds(microseconds / 1000, ndigits = 3)
+
 
 
 class DateTimeParser:
@@ -28,7 +55,7 @@ class DateTimeParser:
 
 	
 	@classmethod
-	def parse(cls, text: str, format: Optional[str] = None) -> DTime:
+	def parse(cls, text: str, format: str | None = None) -> DTime:
 		"""
 		This can read various texts and interpret them as DTimes
 
@@ -39,8 +66,8 @@ class DateTimeParser:
 			(2) Any delta value (9y, 6s, etc)
 			(3) Any value that DTime itself can interpret
 
-		:param text: The text to parse
-		:param format: The format string for the DTime instance
+		:param text: The text to parse (e.g. "today")
+		:param format: (optional) The format string for the DTime instance (e.g. "%Y" for year)
 		:return: The parsed text as a DTime, given that it can be parsed
 		"""
 
@@ -153,7 +180,7 @@ class DateTimeParser:
 		"""
 
 		if deltastrs := cls.get_deltamatchers():
-			return re.match(fr"^(\-|\+)?(\d+[{deltastrs}]?)+$", text)
+			return re.match(fr"^(\-|\+)(\d+[{deltastrs}]?)+$", text)
 
 		return False
 
@@ -167,8 +194,8 @@ class TimeParser(DateTimeParser):
 
 	named_values = {
 					'now': lambda: DTime(),
-					'noon': lambda: DTime().noon(),
-					'midnight': lambda: DTime().midnight(),
+					'noon': lambda: DTime().noon,
+					'midnight': lambda: DTime().midnight,
 				}
 
 
@@ -192,6 +219,7 @@ class DateParser(DateTimeParser):
 				'tomorrow': lambda: DTime.today() + 1,
 				'halloween': lambda: DTime(month = 10, day = 31),
 				'christmas': lambda: DTime(month = 12, day = 25),
+				'newyears': lambda: DTime(month = 1, day = 1),
 	}
 
 
@@ -201,6 +229,8 @@ class DateParser(DateTimeParser):
 				'weeks': ['w'],
 				'days': ['d', '$'],
 	}
+
+
 
 
 class Parser:
@@ -216,6 +246,7 @@ class Parser:
 
 		return DateParser.parse(text)
 
+
 	@staticmethod
 	def time(text: str) -> DTime:
 		"""
@@ -225,63 +256,6 @@ class Parser:
 		return TimeParser.parse(text)
 
 
-class Now:
-	"""
-	A utility class that holds various ways to get right-now's time, including:
-
-		(1) Now in UTC time
-		(2) The computer's current time
-		(3) The current timestamp
-	"""
-
-	def __init__(self, dobjclass: type[DTime]):
-		"""
-		An instance of the Now class, utilizing a supplied DTime class
-
-		:param dobjclass: The class that return objects should instantiate
-		"""
-
-		self.dobjclass = dobjclass
-
-
-	def utc(self) -> DTime:
-		"""
-		Gets the current time in the UTC/Greenwich TimeZone
-
-		:returns: The current time in UTC/Greenwich
-		"""
-
-		# self.dobjclass(...) so that pytest freezetime works
-		return self.dobjclass(datetime.datetime.utcnow(), tzinfo = timezone.utc)
-
-
-	def __call__(self, *args, **kwargs) -> DTime:
-		"""
-		__call__ allows Now class to be called directly, so that DTime.now() works like a method		
-
-		:returns: datetime's now, wrapped in the given dobjclass
-		"""
-
-		return self.now(*args, **kwargs)
-
-
-	def now(self) -> DTime:
-		"""
-		Returns datetime's now, wrapped in the given dobjclass
-
-		:returns: datetime's now, wrapped in the given dobjclass
-		"""
-
-		#self.dobjclass(...) prevents infinite recursion
-		return self.dobjclass(datetime.datetime.now())
-
-	def timestamp(self) -> int:
-		"""
-		Returns the current unix timestamp
-		:returns: The current unix timestamp
-		"""
-
-		return int(time.time()) 
 
 
 
@@ -334,8 +308,13 @@ class DTimeParamParser:
 		return date.replace(tzinfo = current_timezone)
 
 
+	def _dag_filt_value(self, other, operator):
+		breakpoint()
+		pass
+
 
 	def parse_datestr(self, arg: str) -> datetime.datetime:
+		from dateutil import parser as dateutilparser
 		date = dateutilparser.parse(arg)
 
 		if not date.tzinfo:
@@ -349,7 +328,7 @@ class DTimeParamParser:
 
 
 	def parse_timestamp(self, timestamp: int) -> datetime.datetime:
-		return DTime.from_timestamp(timestamp).from_utc()
+		return DTime.from_timestamp(timestamp).from_utc
 
 
 	def parse_datetime_object(self, arg: datetime.datetime) -> datetime.datetime:
@@ -376,8 +355,8 @@ class DTimeParamParser:
 			else:
 				try:
 					self.date = self.parse_datestr(arg)
-				except ValueError:
-						raise ValueError(f"{arg} could not be parsed as a DTime")
+				except ValueError as e:
+						raise ValueError(f"{arg} could not be parsed as a DTime") from e
 
 			self.dtargs.pop(0)
 
@@ -460,10 +439,9 @@ class DTimeParamParser:
 
 
 
+default_formatstr = "%Y-%m-%d %I:%M:%S%p %Z"
 
 class DTime(datetime.datetime):
-	default_formatstr = "%Y-%m-%d %I:%M:%S%p %Z"
-
 	"""
 	A subclass of datetime.datetime with modifcations to make it easier to use
 	Features include:
@@ -480,7 +458,6 @@ class DTime(datetime.datetime):
 	"""
 
 	# Makes it easier to retrieve the dateutil relativedelta class
-	datedelta = relativedelta
 	parse = Parser
 	
 	def __new__(cls, *args: tuple[Dateable], format: Optional[str] = None, utc = False, **kwargs: dict[str, Dateable]):
@@ -497,7 +474,7 @@ class DTime(datetime.datetime):
 		dtinfo = DTimeParamParser(*args, **kwargs).get_datetime_info()
 
 		self = datetime.datetime.__new__(cls, **dtinfo)
-		self.formatstr = format or self.default_formatstr
+		self.formatstr = format or default_formatstr
 
 		if utc:
 			self = self.replace(tzinfo = timezone.utc)
@@ -505,9 +482,23 @@ class DTime(datetime.datetime):
 		return self
 
 
-	@classmethod
-	def utc(cls, *args, **kwargs):
-		return cls(*args, **kwargs).replace(tzinfo = timezone.utc)
+	def __call__(self, formatstr = "") -> str | DTime:
+		"""
+		Formats the date if a formatstr is provided, else just returns self (unless a better idea comes later)		
+		
+		:returns: datetime's now, wrapped in the given dobjclass
+		"""
+
+		if formatstr:
+			return self.format(formatstr)
+
+		return self
+
+
+
+	@property
+	def utc(self, *args, **kwargs):
+		return self.to_utc()
 
 
 
@@ -517,15 +508,19 @@ class DTime(datetime.datetime):
 
 
 	@classmethod
-	@property
-	def now(cls) -> Now:
+	def now(cls, formatstr: str = "") -> str | DTime:
 		"""
 		A way to access an instance of the Now method-class
 
 		:returns: An instance of the now method class
 		"""
 
-		return Now(cls)
+		nowdtime = cls()
+
+		if formatstr:
+			return nowdtime.format(formatstr)
+
+		return nowdtime
 
 
 	@classmethod
@@ -551,7 +546,11 @@ class DTime(datetime.datetime):
 		# Since deltadate expects plural arguments, add "s" to end of parameters if not already there
 		kwargs = {(k+"s" if not k.endswith("s") else k): v for k,v in kwargs.items()}
 
-		return self + self.datedelta(**kwargs)
+		from dateutil.relativedelta import relativedelta
+
+		# If this object has a TZ other than the computer's (e.g: UTC) and then relativedelta is applied,
+		# relativedelta will re-apply the computer's current TZ. Hence, this code replaces the tzinfo with the current object's tzinfo
+		return (self + relativedelta(**kwargs)).replace(tzinfo = self.tzinfo)
 
 
 	@property
@@ -564,6 +563,18 @@ class DTime(datetime.datetime):
 		"""
 
 		return int(super().timestamp())
+
+
+	@property
+	def millitimestamp(self) -> int:
+		"""
+		Returns the millisecond timestamp of the given datetime.
+		Used as a property since dtimes are immutable
+
+		:returns: The timestamp of the dtime object in milliseconds
+		"""
+
+		return int(super().timestamp()*1000)
 		
 
 	def format(self, formatstr: Optional[str] = None) -> str:
@@ -608,6 +619,10 @@ class DTime(datetime.datetime):
 		"""
 
 		return f"<{object.__repr__(self)} {self.__str__()}>"
+
+
+	def _dag_resource_repr(self):
+		return self.format('%s <c #70 / (%a., %b %d, %Y @ %I:%M:%S %p (%Z))>')
 		
 
 	# DTime is registered as DagCacheNamer elsewhere
@@ -634,14 +649,35 @@ class DTime(datetime.datetime):
 		"""
 		This is set up so that anything from yesterday is 1 day ago, anything from today is 0 days ago, anything from tomorrow is -1 days ago
 
-		This was done instead of "anything 24-48 hours ago is -1 day ago, anything from 48-72 hours ago is -2 days ago", etc
+		This was done instead of "anything 24-48 hours ago is 1 day ago, anything from 48-72 hours ago is 2 days ago", etc
 
-		:returns: how many days ago this dtime object is from now
+		:returns: how many days ago this dtime object is from now. Postitive if in the past, Negative if in the future
 		"""
 
-		return self.parse_timedelta(self.today().midnight() - self.midnight()).days
+		return self.parse_timedelta(self.today().midnight - self.midnight).days
 
 
+	@property
+	def Ymd(self) -> str:
+		"""
+		Returns a string of the date as "yyyymmdd" 
+		e.g.: March 5, 2048 -> 20480305
+
+		:returns: A string representation of the DTime object as yyyymmdd
+		"""
+
+		return self.format("%Y%m%d")
+
+	@property
+	def ymd(self) -> str:
+		"""
+		Returns a string of the date as "yymmdd" 
+		e.g.: March 5, 2048 -> 480305
+
+		:returns: A string representation of the DTime object as yymmdd
+		"""
+
+		return self.format("%y%m%d")
 
 	@property
 	def yearsago(self) -> int:
@@ -659,7 +695,7 @@ class DTime(datetime.datetime):
 		:returns: how many days ago this dtime object is from now
 		"""
 
-		return self.parse_timedelta(self.today().newyear() - self.newyear()).years
+		return self.parse_timedelta(self.today().newyear - self.newyear).years
 
 		try:
 			return (self.today() - self).days//365
@@ -668,7 +704,7 @@ class DTime(datetime.datetime):
 
 
 	@staticmethod
-	def computer_utc_offset() -> int:
+	def compute_utc_offset() -> int:
 		is_dst = time.daylight and time.localtime().tm_isdst > 0
 		return time.altzone if is_dst else time.timezone
 
@@ -685,16 +721,22 @@ class DTime(datetime.datetime):
 
 	@classmethod
 	def current_timezone(cls):
-		return cls.generate_tzoffset(-cls.computer_utc_offset())
+		return cls.generate_tzoffset(-cls.compute_utc_offset())
 
 
-	def from_utc(self):
+	@property
+	def from_utc(self, force = False):
 		if self.utc_offset == 0:
-			return self.delta(seconds = -self.computer_utc_offset())
+			return self.delta(seconds = -self.compute_utc_offset())
 
 		return self
 
+	@property
+	def force_from_utc(self):
+		return self.delta(seconds = -self.compute_utc_offset())
 
+
+	@property
 	def to_utc(self):
 		if self.utc_offset == 0:
 			return self
@@ -753,40 +795,63 @@ class DTime(datetime.datetime):
 
 		return super().__add__(other)
 
+
 	def replace(self, **kwargs):
 		date = super().replace(**kwargs)
 		date.formatstr = self.formatstr
 		return date
 
 
+	@property
 	def noon(self):
 		return self.replace(hour = 12, minute = 0, second = 0, microsecond = 0)
 
-
+	@property
 	def midnight(self):
 		return self.replace(hour = 0, minute = 0, second = 0, microsecond = 0)
 
-
+	@property
 	def newyear(self):
-		return self.replace(month = 1, day = 1).midnight()
+		return self.replace(month = 1, day = 1).midnight
 
-
+	@property
 	def yesterday(self):
 		return self.delta(days = -1)
 
 
+	@property
+	def make_today(self):
+		return self.now() | self
+
+	@property
 	def tomorrow(self):
 		return self.delta(days = 1)
 
 
 	@property
 	def firstofmonth(self):
-		return self.replace(day = 1).midnight()
+		return self.replace(day = 1).midnight
 
 
 	@property
 	def lastmonth(self):
 		return self.delta(months = -1)
+
+	@property
+	def ispast(self):
+		return self < self.now()
+
+	@property
+	def isfuture(self):
+		return self > self.now()
+
+	@property
+	def iso(self):
+		return self.isoformat()
+
+
+	def __hash__(self):
+		return hash(self.timestamp)
 
 
 	def __or__(self, other):
@@ -794,3 +859,33 @@ class DTime(datetime.datetime):
 			return self.replace(hour = other.hour, minute = other.minute, second = other.second, microsecond = other.microsecond)
 
 		return super().__or__(other)
+
+
+	def _dag_filt_value(self, operator, other):
+		if isinstance(other, str):
+			try:
+				other = type(self)(other)
+			except ValueError:
+				pass
+
+		return operator(self, other)
+
+
+
+
+def dateslice(response, lamb, total, defaultidx = -1):
+	total_items = len(response)
+	nearest_item = next((item for item in response if lamb(item)), response[defaultidx])
+
+	nearest_item_idx = response.index(nearest_item)
+	slice_amt = int(total/2)
+
+	startidx = max(0, nearest_item_idx - slice_amt)
+	endidx = min(total_items, nearest_item_idx + slice_amt)
+
+	if startidx == 0:
+		endidx = min(total_items, total)
+	elif endidx == total_items:
+		startidx = max(0, total_items - total)
+
+	return response[startidx:endidx], nearest_item

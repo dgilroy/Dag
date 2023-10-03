@@ -76,3 +76,17 @@ def multithread_map(fn: Callable[..., Any], inputs: Sequence[Any], *args) -> lis
 
 	# Else, only single input: run normally 	
 	return [fn(inputs[0], *args)]
+
+
+
+
+"""
+def async_process_data(data):
+    '''Simulate processing of data.'''
+    loop = asyncio.get_event_loop()
+    tasks = []
+    for d in data:
+        tasks.append(loop.run_in_executor(None, process_data, d))
+    loop.run_until_complete(asyncio.wait(tasks))
+    return True
+"""

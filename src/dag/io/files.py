@@ -1,182 +1,220 @@
 import sys, os, pathlib, io, builtins, shutil
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Union, NoReturn, Optional
+from typing import NoReturn
 
 import dag
 
 
-Pathable = Union[Path, str]
+Pathable = Path | str
 
 
-
-def is_inside_dag(filepath: Pathable) -> bool:
-	"""
-	Checks whether a given filepath is located inside the dag project's root path
-
-	:param filepath: The filepath to be checked
-	:returns: A boolean indicating whether the file is located within the dag root directory
-	"""
-
-	filepath = Path(filepath)
-
-	return dag.ROOT_PATH in filepath.absolute().parents
+class FileManager:
+	def __init__(self, root: Pathable = ""):
+		self.root = dag.Path(root)
 
 
-def force_inside_dag(filepath: Pathable) -> Path:
-	"""
-	Takes a filepath and ensures it exists inside the dag root directory
+	def process_filepath(self, filepath: Pathable) -> dag.Path:
+		filepath = dag.Path(filepath)
 
-	:param filepath: The filepath to force into the dag root directory
-	:returns: The filepath, possibly modified so that it is inside the dag root directory
-	"""
+		if self.root in filepath.parents:
+			return filepath
 
-	# if filepath is already in the dag ROOT_DIR, return filepath
-	if is_inside_dag(filepath):
-		return filepath
-
-	# Strip any leading slashes that may have indicated Unix root folder
-	filepath = str(filepath).lstrip("/")
-
-	filepath = Path(filepath)
-
-	return dag.ROOT_PATH / filepath
+		return self.root / filepath
 
 
-def touch(filepath: Pathable) -> NoReturn:
-	"""
-	Perform unix-style touch on a file
+	def touch(self, filepath: Pathable) -> NoReturn:
+		"""
+		Perform unix-style touch on a file
 
-	:param filepath: The filepath to touch
-	"""
+		:param filepath: The filepath to touch
+		"""
 
-	filepath = pathlib.Path(filepath)
+		filepath = self.process_filepath(filepath)
 
-	directory = filepath if filepath.is_dir() else filepath.parents[0]
-	
-	directory.mkdir(parents=True, exist_ok=True) 
+		directory = filepath if filepath.is_dir() else filepath.parents[0]
+		
+		directory.mkdir(parents=True, exist_ok=True) 
 
-	try:
-		filepath.touch()
-	except Exception as e:
-		breakpoint()
-		pass
-
-do_touch = touch # Done so that if "touch" is a kwarg, can still call touch()
+		try:
+			filepath.touch()
+		except Exception as e:
+			breakpoint()
+			pass
 
 
-def filename_avoid_overwrite(path: Pathable) -> Path:
-	"""
-	Takes in a filepath and modifies the filename so that it is unique in its directory
+	def filename_avoid_overwrite(self, path: Pathable) -> dag.Path:
+		"""
+		Takes in a filepath and modifies the filename so that it is unique in its directory
 
-	If given "wow.py" and "wow.py" already exists in directory, returns "wow(1).py"
-	If "wow(1).py" also already exists, returns "wow(2).py"
-	etc...
+		If given "wow.py" and "wow.py" already exists in directory, returns "wow(1).py"
+		If "wow(1).py" also already exists, returns "wow(2).py"
+		etc...
 
-	:param path: The path to make Unique
-	:returns: A Path object with a filename unique to the directory
-	"""
+		:param path: The path to make Unique
+		:returns: A Path object with a filename unique to the directory
+		"""
 
-	path = Path(path)
+		path = self.process_filepath(path)
 
-	if path.exists():
-		i = 1
-		stem = path.stem
-		newpath = path.with_stem(f"{stem}({i})")
-
-		while newpath.exists():		
-			i += 1
+		if path.exists():
+			i = 1
+			stem = path.stem
 			newpath = path.with_stem(f"{stem}({i})")
 
-		return newpath
+			while newpath.exists():		
+				i += 1
+				newpath = path.with_stem(f"{stem}({i})")
 
-	return path
+			return newpath
 
-
-def file_exists(filepath: Pathable, inside_dag: bool = False) -> bool:
-	"""
-	Checks whether a given filepath already exists
-
-	:param filepath: The filepath to check
-	:param inside_dag: Whether to force filepath into dag
-	:returns: Whether the given filepath already exists
-	"""
-
-	filepath = Path(filepath)
-
-	if inside_dag:
-		filepath = force_inside_dag(filepath)
-
-	return filepath.exists()
+		return path
 
 
-file_exists_in_dag = lambda filename, *args, **kwargs: DagFileOpener(filename, *args, **(kwargs | {"inside_dag": True}))
+	def exists(self, filepath: Pathable) -> bool:
+		"""
+		Checks whether a given filepath already exists
+
+		:param filepath: The filepath to check
+		:returns: Whether the given filepath already exists
+		"""
+
+		filepath = self.process_filepath(filepath)
+
+		return filepath.exists()
 
 
-@contextmanager
-def open(filepath: Pathable, permissions: str = "r", opener = None, touch: bool = True, inside_dag: bool = False, **kwargs):
-	"""
-	A file opener utility for files in dag. Acts as a context manager wrapper for builtins.open
 
-	:param filepath: The path of the file being opened
-	:param permissions: The file permissions for the file being opened
-	:param opener: The function that will open the file. Defaults to builtins.open, but another possibility is gzip.open
-	:param touch: Whether or not to touch the file before opening
-	:param inside_dag: Whether ot not to force the file into the root dag folder
-	:param kwargs: Any other args to be passed into the opener
-	"""
+	@contextmanager
+	def do_open(self, filepath: Pathable, mode: str = "r", opener = None, touch: bool = True, **kwargs):
+		"""
+		A file opener utility for files in dag. Acts as a context manager wrapper for builtins.open
 
-	raw_filepath = filepath # May eventually use DagPlatform to convert paths Win<->Unix. Store original path here
-	filepath = pathlib.Path(filepath)
+		:param filepath: The path of the file being opened
+		:param mode: The file mode for the file being opened
+		:param opener: The function that will open the file. Defaults to builtins.open, but another possibility is gzip.open
+		:param touch: Whether or not to touch the file before opening
+		:param kwargs: Any other args to be passed into the opener
+		"""
 
-	if inside_dag:
-		filepath = force_inside_dag(filepath)
+		raw_filepath = filepath # May eventually use DagPlatform to convert paths Win<->Unix. Store original path here
+		filepath = self.process_filepath(filepath)
 
-	permissions = permissions
-	opener = opener or builtins.open
-	touch = touch
-	kwargs = kwargs
+		opener = opener or builtins.open
 
-	file = None
+		file = None
 
-	if touch:
-		do_touch(filepath)
+		if touch:
+			self.touch(filepath)
+			
+		file = opener(filepath, mode, **kwargs)
 		
-	file = opener(filepath, permissions, **kwargs)
-	
-	yield file
+		yield file
 
-	try:
-		file.close()
-	except AttributeError as e:
-		breakpoint()
-		pass
+		try:
+			file.close()
+		except AttributeError as e:
+			breakpoint()
+			pass
 
 
-
-open_in_dag = lambda filepath, *args, **kwargs: open(filepath, *args, **(kwargs | {"inside_dag": True}))
-
-
-#@dag.iomethod(group = "file")
-def read(filepath, opener = open, *args, **kwargs):
-	with open(filepath, "r", *args, **kwargs) as file:
-		return file.read()
+	open = do_open
 
 
-def read_in_dag(*args, **kwargs):
-	return read(*args, **(kwargs | {"inside_dag": True}))
+	@dag.iomethod(name = "read", group = "file")
+	def read(self, filepath: Pathable, opener = None, *args, **kwargs) -> str:
+		opener = opener or self.do_open
+
+		filepath = self.process_filepath(filepath)
+		with self.open(filepath, "r", *args, **kwargs) as file:
+			return file.read()
 
 
-def append(filepath, text, opener = open, *args, **kwargs):
-	with opener(filepath, "a+", *args, **kwargs) as file:
-		file.write(text)
+	@dag.iomethod(name = "readlines", group = "file")
+	def readlines(self, filepath: Pathable, opener = None, *args, **kwargs) -> list[str]:
+		opener = opener or self.do_open
 
-def append_line(filepath, text, opener = open, *args, **kwargs):
-	text = text if text.endswith("\n") else text + "\n"
-	append(filepath, text, opener, *args, **kwargs)
+		filepath = self.process_filepath(filepath)
+		with self.open(filepath, "r", *args, **kwargs) as file:
+			return file.read().splitlines()
 
 
-def iterlines(filepath, opener = open, *args, **kwargs):
-	with opener(filepath, "r", *args, **kwargs) as f:
-		for line in f:
-			yield line
+	def append(self, filepath: Pathable, text: str, opener = None, *args, **kwargs) -> None:
+		opener = opener or self.do_open
+		filepath = self.process_filepath(filepath)
+
+		with opener(filepath, "a+", *args, **kwargs) as file:
+			file.write(str(text))
+
+
+	def appendline(self, filepath: Pathable, text: str, opener = None, *args, **kwargs) -> None:		
+		maybenewline = "\n" if not text.endswith("\n") else ""
+		return self.append(filepath, text + maybenewline)
+
+
+	def append_if_new(self, filepath: Pathable, item: str, opener = None, *args, **kwargs) -> None:
+		opener = opener or self.do_open
+		filepath = self.process_filepath(filepath)
+
+		with opener(filepath, "a+", *args, **kwargs) as file:
+			file.seek(0)
+			
+			for line in file:
+				line = line.strip("\n")
+
+				if item == line:
+					return
+
+			file.write(item + "\n")
+
+
+	def append_line(self, filepath: Pathable, text: str, opener = None, *args, **kwargs) -> None:
+		opener = opener or self.do_open
+		filepath = self.process_filepath(filepath)
+
+		text = text if text.endswith("\n") else text + "\n"
+		self.append(filepath, text, opener, *args, **kwargs)
+
+
+	def iterlines(self, filepath: Pathable, opener = None, *args, **kwargs):
+		opener = opener or self.do_open
+		filepath = self.process_filepath(filepath)
+
+		with opener(filepath, "r", *args, **kwargs) as f:
+			for line in f:
+				yield line
+
+
+	def rmdir(self, dirpath: Pathable, force: bool = False) -> str | None:
+		dirpath = self.process_filepath(dirpath)
+
+		if not dirpath.exists():
+			return f"Directory <c b u>{dirpath}</c b u> not found"
+
+		assert dirpath.is_dir(), "Path must be a directory"
+
+		if force:
+			confirm = True
+		else:
+			confirm = dag.cli.confirm(f"Delete directory: <c #F00>{dirpath}</c #F00>?")
+
+		if confirm:
+			shutil.rmtree(dirpath)
+			dag.echo(f"Removed directory <c b u>{dirpath}</c b u>")
+
+
+	def delete(self, path: Pathable, force: bool = False) -> bool:
+		path = self.process_filepath(path)
+
+		if not path.exists():
+			return False
+
+		if path.is_dir():
+			return self.rmdir(path, force)
+
+		with dag.cli.confirmer(f"Delete directory: <c #F00>{path}</c #F00>?	", force = force) as confirm:
+			if confirm:
+				path.unlink()
+				return True
+
+		return False

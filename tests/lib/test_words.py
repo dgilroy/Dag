@@ -51,22 +51,22 @@ def test_pluralize(pl):
 
 
 def test_pluralize_by_quantity(pq):
-	assert pq(0, "item") == "items"
-	assert pq(1, "item") == "item"
-	assert pq(1.5, "item") == "items"
-	assert pq(2, "item") == "items"
-	assert pq(2, "item", "itemz") == "itemz"
+	assert pq("item", 0) == "items"
+	assert pq("item", 1) == "item"
+	assert pq("item", 1.5) == "items"
+	assert pq("item", 2) == "items"
+	assert pq("item", 2, "itemz") == "itemz"
 
 def test_quantize(qt):
-	assert qt(-1, "item") == "-1 items"
-	assert qt(0, "item") == "0 items"
-	assert qt(1, "item") == "1 item"
-	assert qt(1.5, "item") == "1.5 items"
-	assert qt(2, "item") == "2 items"
-	assert qt(2, "item", "itemz") == "2 itemz"
+	assert qt("item", -1) == "-1 items"
+	assert qt("item", 0) == "0 items"
+	assert qt("item", 1) == "1 item"
+	assert qt("item", 1.5) == "1.5 items"
+	assert qt("item", 2) == "2 items"
+	assert qt("item", 2, "itemz") == "2 itemz"
 
 def test_quantize_or_ignore(qi):
-	assert qi(0, "item") == ""
-	assert qi(1, "item") == "1 item"
-	assert qi(2, "item") == "2 items"
-	assert qi(2, "item", "itemz") == "2 itemz"
+	assert qi("item", 0) == ""
+	assert qi("item", 1) == "1 item"
+	assert qi("item", 2) == "2 items"
+	assert qi("item", 2, "itemz") == "2 itemz"

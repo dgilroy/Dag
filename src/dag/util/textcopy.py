@@ -1,6 +1,7 @@
 import dag
 
-def copy_text(text = None, echo = False, codec = "utf-8"):
+def copy_text(text: str = None, echo: bool = False, codec: str = "utf-8") -> str:
+	text = str(text)
 	text = text.strip().strip("\n")
 
 	response = dag.get_terminal().strip_escape_codes(text)
@@ -8,7 +9,6 @@ def copy_text(text = None, echo = False, codec = "utf-8"):
 
 	dag.get_platform().clipboard(response, codec)
 
-	print("\nText Copied")
+	dag.echo("\nText Copied")
 								
-	if echo:
-		return response
+	return response

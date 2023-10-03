@@ -5,6 +5,9 @@ from subprocess import run, Popen, PIPE
 from dag.lib import term
 
 
+PROGRAM_NAME = "dag"
+
+
 ##PLATFORM
 class Platform(abc.ABC):
 	"""
@@ -104,7 +107,7 @@ class Platform(abc.ABC):
 		return re.match("^[a-zA-Z]:", path)
 
 
-	@classmethod
+	@staticmethod
 	def path_is_unix(path: str) -> bool:
 		"""
 		A simple regex test to see whether path begins with "/"
@@ -114,6 +117,38 @@ class Platform(abc.ABC):
 		"""
 
 		return re.match("^/", path)
+
+
+	@staticmethod
+	def homepath():
+		return pathlib.Path.home()
+
+	@classmethod
+	def datapath(cls, program_name):
+		raise NotImplementedError("No data directory specified")
+
+	@classmethod
+	def configpath(cls, program_name):
+		raise NotImplementedError("No config directory specified")
+
+	@classmethod
+	def statepath(cls, program_name):
+		raise NotImplementedError("No state directory specified")
+
+	@classmethod
+	def cachepath(cls, program_name):
+		raise NotImplementedError("No cache directory specified")
+
+	@classmethod
+	def runtimepath(cls, program_name):
+		raise NotImplementedError("No cache directory specified")
+
+	@staticmethod
+	def program_name(program_name):
+		raise NotImplementedError("Program Name not implemented")
+
+
+
 
 
 
@@ -142,6 +177,69 @@ class Unix(Platform):
 		:returns: the windows-formatted path
 		"""
 		return re.sub(rf"{cls.drive_prfix}(.)/", lambda match: r'{}:/'.format(match.group(1).upper()), path).replace("/","\\")
+
+
+	@classmethod
+	def clipboard(cls, text: str, codec: str = "utf-8") -> NoReturn:
+		"""
+		Places selected text into clipboard in Cygwin
+
+		:param text: The text to be placed into the clipboard
+		"""
+
+		try:
+			Popen([cls.copier], stdin=PIPE).communicate(bytearray(text, codec))
+		except Exception:
+			print(f"Make sure '{cls.copier}' is installed.")
+
+
+	@classmethod
+	def xdg_path(cls, varname, defaultdir):
+		if XDG := os.environ.get("XDG_CACHE_HOME"):
+			return pathlib.Path(XDG)
+
+		return pathlib.Path(defaultdir).expanduser()
+
+
+	@classmethod
+	def cachepath(cls, program_name = ""):
+		return cls.xdg_path("XDG_CACHE_HOME", "~/.cache") / cls.program_name(program_name)
+
+	@classmethod
+	def datapath(cls, program_name = ""):
+		return cls.xdg_path("XDG_DATA_HOME", "~/.local/share") / cls.program_name(program_name)
+
+	@classmethod
+	def configpath(cls, program_name = ""):
+		return cls.xdg_path("XDG_CONFIG_HOME", "~/.config") / cls.program_name(program_name)
+
+	@classmethod
+	def statepath(cls, program_name = ""):
+		return cls.xdg_path("XDG_STATE_HOME", "~/.local/state") / cls.program_name(program_name)
+
+	@staticmethod
+	def program_name(program_name):
+		return program_name
+
+	# May want to overwrite in the future
+	@classmethod
+	def file_manager(cls, file = "."):
+		return cls.launch(file)
+
+
+
+class WSL2(Unix):
+	drive_prefix = "/mnt/"
+	launcher = "wslview"
+	opener = "wslview"
+	copier = "clip.exe"
+
+	@classmethod
+	def path_to_native(cls, path):
+		if str(path).startswith("\\\\wsl"):
+			return path
+
+		return ("//wsl$/Ubuntu"+ str(path)).replace("/", "\\")
 
 
 
@@ -177,19 +275,6 @@ class Cygwin(Unix):
 	path_to_native = path_to_windows
 
 
-	@classmethod
-	def clipboard(cls, text: str, codec: str = "utf-8") -> NoReturn:
-		"""
-		Places selected text into clipboard in Cygwin
-
-		:param text: The text to be placed into the clipboard
-		"""
-
-		try:
-			Popen([cls.copier], stdin=PIPE).communicate(bytearray(text, codec))
-		except Exception:
-			print("Make sure 'clip' is installed on Cygwin")
-
 
 
 ####WINDOWS
@@ -199,10 +284,36 @@ class Windows(Platform):
 	is_unix = True
 	is_windows = False
 
+	@staticmethod
+	def program_name(program_name):
+		return program_name.capitalize()
+
+	@classmethod
+	def roaming(cls):
+		return cls.homepath() / "AppData" / "Roaming"
+
+	@classmethod
+	def cachepath(cls, program_name):
+		return cls.roaming()  / cls.program_name(program_name) /"cache"
+
+	@classmethod
+	def datapath(cls, program_name):
+		return cls.roaming()  / cls.program_name(program_name) / "data"
+
+	@classmethod
+	def configpath(cls, program_name):
+		return cls.roaming()  / cls.program_name(program_name) / "config"
+
+	@classmethod
+	def statepath(cls, program_name):
+		return cls.roaming()  / cls.program_name(program_name) / "state"
+
+
 
 platforms = {
 	"win32": Windows,
 	"cygwin": Cygwin,
+	"wsl2": WSL2,
 }
 
 ##TOOLS
@@ -215,6 +326,9 @@ def get_platform() -> Platform:
 
 	if sys.platform in platforms:
 		return platforms[sys.platform]
+
+	if "WSL2" in os.uname().release:
+		return WSL2
 
 	return Unix
 

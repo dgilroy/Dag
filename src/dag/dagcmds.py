@@ -1,531 +1,413 @@
-import re, traceback, inspect
-from copy import deepcopy
-from collections.abc import Sequence, Mapping
-from typing import Any
+import inspect, copy, functools
+from collections.abc import Mapping
+from typing import Callable, Self
 
 import dag
-from dag.lib import dot
-from dag.util import nabbers
-
+from dag.lib import dummies
+from dag.util.argspectools import map_argspec_to_locals
 
 from dag import dagargs
-from dag.exceptions import DagPlaceholderError
-from dag.dagcmd_exctx import DagCmdExecutionContext
-from dag.persistence import CacheFile
-
-from dag.tempcache import TempCacheFile
-from dag.identifiers import DagCmdBase
+from dag.exceptions import DagPlaceholderError, DagError
+from dag.identifiers import Identifier
+from dag.builders import DisplayBuilder
+from dag.dagcmd_executors import DagCmdExecutor
 
 
 
-class DagArgable:
-	def __init__(self, dagargs_settings_dicts = None):
-		pass
+def extract_fn(fn: Callable) -> tuple[Callable, Callable]:
+	origfn = fn
 
+	match fn:
+		case DagCmd():
+			while isinstance(fn, DagCmd):
+				fn = fn.fn
+		case _:
+			pass
 
-class DagCmd(DagCmdBase):
-	def __init__(self, fn, settings, dagmod = None, dagargs_settings_dicts = None, name = None):
-		super().__init__()
-
-		# The module this DagCmd belongs to
-		self.dagmod = dagmod or dag.ctx.active_dagcmd
-		self.rootcmd = dagmod or self
-		self._parent_dagcmd = self.dagmod
-		
-		self.settings = dagmod.settings | nabbers.NabbableSettings(dagmod.settings | settings)
-		self.settings.setdefault("catch", DagPlaceholderError)
-		self.settings.setdefault("subcmds", {})
-		
-		self.subcmdtable.register_child("subcmds").populate(self.settings.subcmds)
-		
-		# The function that this DagCmd wraps
-		self.fn = fn
-		self.fninfo = self.FnInfo(fn)
-		self.name = name or self.fninfo.name
-
-		# The list of @dag.arg decorators over the DagCmd
-		self.dagargs_settings_dicts = dagargs_settings_dicts or {}
-		self.dagargs = self.DagArgsList(self)
-		
-		self.update_dagcmd_cache = False
-
-		self.locals = {} # Used by PartialDagCmd
-
-
-	class FnInfo:
-		def __init__(self, fn):
-			self.fn = fn
-			self.name = self.fn.__name__
-			self.argspec = inspect.getfullargspec(self.fn)
-
-			defaults = dict(zip(self.argspec.args[::-1], (self.argspec.defaults or ())[::-1]))
-			self.arg_defaults = defaults | (self.argspec.kwonlydefaults or {})
+	return fn, origfn
 
 
 
-	def _get_subcmd(self, subcmdname, subcmdtable_val):
-		return subcmdtable_val
 
-		
+
+#>>>> DagCmd
+class DagCmd(Identifier, dag.mixins.DagSettings, dag.DotAccess):
+	dagcmd_executor = DagCmdExecutor
+
+	def __init__(self, settings, fn = None, dagapp = None, name = None, added_argspec_args = None, callframeinfo = None):
+		with dag.dtprofiler("dagcmd_init") as tp:
+			super().__init__(callframeinfo = callframeinfo, settings = settings)
+
+			# The function that this DagCmd wraps
+			if isinstance(fn, property):
+				fn = fn.fget
+
+			self._fn = fn or settings.get("fn", dummies.DummyNoArgCallable())
+			self._cmd_root = self # Being used by creating subcmds
+
+			# The settings passed into the dagcmd
+			self.set_root(dagapp or dag.ctx.active_dagcmd)
+
+			# Cmd settings
+			self._settings.setdefault("catch", DagPlaceholderError)
+			self._settings.setdefault("prettyprint", True)
+			self._settings.setdefault("sort_dict_response", True)
+			self._settings.setdefault("store_ic_response", True)
+			self._settings.setdefault("store_inputscript", True)
+			self._settings.setdefault("enable_tempcache", True)
+
+			try:
+				self._settings.raw_value = self.settings['value']._stored_attrs[0].args[0]
+			except Exception:
+				pass
+			
+			self._name = name
+
+			self.is_regexcmd = dag.rslashes.item_is_rslash(self._name)
+
+			if self.is_regexcmd:
+				self._settings.setdefault("regex_priority", 10)
+
+			self._argspec = None
+			self._dagargs = None
+			self._added_argspec_args = added_argspec_args or {} # Used if no fn is passed into dagcmd. Used by ops
+
+
+	def _dag_get_settings(self):
+		return self.settings
+
+
+	def _set_iomethod_value(self, methodname, target = "", drill = None, **kwargs):
+		"""
+		Processes a given iomethod, including possibly turning dagcmd into a 1-liner
+		"""
+
+		iomethod = dag.dagio.registered_iomethods[methodname]
+
+		with dag.bbtrigger("iometh"):
+			self._settings.value = dag.nab(iomethod)(target, drill = drill, **kwargs)
+			self._settings.raw_value = target
+
+		return self
+
+
+	def __getattr__(self, attr: str) -> functools.partial | None:
+		if attr.isupper():
+			if attr.lower() in dag.dagio.registered_iomethods:
+				return functools.partial(self._set_iomethod_value, attr.lower())
+
+			# Set arbitrary settings if uppercased
+			name, value = dag.evaluate_name(attr)
+			self._settings[name.lower()] = value
+			return self
+
+
+	def LAUNCH(self, url, *args, **kwargs):
+			"""
+			Sets the dagcmd so that it launches a given URL
+			:param url: The object to launch
+			:param args: Any args to be passed into the launcher
+			:param kwargs: Any kwargs to be passed into the launcher
+			:returns: The dagcmd if built, else this dagcmd builder
+			"""
+
+			self._settings.value = dag.nab.launch(url, *args, **kwargs)
+			return self
+
+
+	@property
+	def DEFAULT(self):
+		self.root.default_dagcmd = self
+		return self
+
+
+	def copy(self):
+		return copy.copy(self)
+
+
+	def copy_to_app(self, app):
+		return self.copy().set_root(app)
+
+
+	def set_root(self, root):
+		self.root = root
+		self.dagapp = root
+		self._parent_dagcmd = root # used by cmdpath
+		return self
+
+
 	@property
 	def fn(self):
 		return self._fn
 
 
-	@fn.setter
-	def fn(self, fn):
-		self._fn = fn
-		# The name of the function this DagCmd wraps
-		self.fn_name = self.settings.fn_name or fn.__name__
-		# The argspec of the function
-		self.fn_argspec = inspect.getfullargspec(fn)
-		# The argspec of the DagCmd which may be modified
-		self.argspec = inspect.getfullargspec(fn)
+	@property
+	def name(self):
+		if self.fn:
+			return self._name or self.settings.fn_name or self.fn.__name__
+
+		return self._name or self.settings.fn_name
 
 
+	@property
+	def settings(self):
+		if self.root:
+			return self.root.settings | self._settings # dagapp.settings is a NabbableSettings instance, so unioning will yield another NS instance 
+
+		return self._settings
+
+
+	@settings.setter
+	def settings(self, key, value):
+		self._settings[key] = value
+
+
+	def add_dagcmd(self, dagcmd, is_default_cmd = False):
+		self.dagcmds.add(dagcmd, dagcmd.name)
+
+		if not dag.ctx.adding_dagcmd:
+			with dag.ctx(adding_dagcmd = True):
+				setattr(self, dagcmd.name, dagcmd)
+
+		return dagcmd
+
+
+	@property
+	def add_dagarg(self):
+		return DagArgAdder(self)
+
+	add_arg = add_dagarg
+
+
+	@property
+	def argspec(self) -> inspect.FullArgSpec:
+		if self._argspec is None:
+			if self.fn:
+				self._argspec = copy.copy(dag.argspec(self.fn))
+
+			else:
+				self._argspec = dummies.emptyargspec
+
+			if self._added_argspec_args:
+				for arg in self._added_argspec_args:
+					if not arg in self._argspec.args:
+						self._argspec.args.append(arg)
+
+		return self._argspec
+
+
+	@property
+	def dagargs(self):
+		if self._dagargs and self._dagargs.argspec == self.argspec:
+			return self._dagargs
+
+		self._dagargs = dagargs.DagArgsList.build_from_argspec(argspec = self.argspec, arglist = getattr(self.fn, "dagargs", None))
+
+		return self._dagargs
+
+
+
+	def process_incmd(self, incmd):
+		# For any dagargs.in the cmd fn that weren't specified in an @dag.arg, build them here
+
+		if self.settings.display:
+			dagargslist = None
+
+			if hasattr(self.settings.display, "dagargs"):
+				dagargslist = self.settings.display.dagargs
+
+			kwonlyargspec = dag.argspectools.kwonlyargspec(self.settings.display)
+
+			kwonlydagargslist = dagargs.DagArgsList.build_from_argspec(kwonlyargspec)
+
+			if dagargslist:
+				[dagargslist.add(dagarg, overwrite = False) for dagarg in kwonlydagargslist]
+			else:
+				dagargslist = kwonlydagargslist
+
+
+			for dagarg in dagargslist:
+				if dagarg.is_positional_dagarg: # Only named dagargs allowed for display fns
+					continue
+
+				if dagarg.target in incmd.dagargs.targetdict:
+					raise DagError(f"Duplicate dagarg registered ({dagarg.name}) in dagcmd \"{self.cmdpath()}\"")
+
+				dagarg.settings.cacheable = False
+				dagarg.settings.required = False
+				incmd.dagargs.add(dagarg)
+
+		return incmd
+		
 		
 	# The default values of the kwargs belonging to the function
 	# This is set as a property because the argspec can be updated
 	@property
-	def fn_arg_defaults(self):
-		defaults = dict(zip(self.fn_argspec.args[::-1], (self.fn_argspec.defaults or ())[::-1]))
-		return dag.nab_if_nabber(defaults | (self.fn_argspec.kwonlydefaults or {}))
+	def defaults(self) -> dict[str, object]:
+		with dag.ctx(active_dagcmd = self):
+			defaults = dag.argspectools.get_default_values(self.argspec)
+			return dag.nab_if_nabber(defaults | (self.argspec.kwonlydefaults or {}))
 
 
-	@property
-	def defaults(self):
-		return self.fn_arg_defaults
-
-
-	def __repr__(self):
+	def __repr__(self) -> str:
 		main_format = "white bg-lightseagreen"
 		objrepr = object.__repr__(self)
 
-		return dag.format(f'<<c {main_format}>{self.dagmod.name} "{self.name}": {objrepr}</c>>')
-		
-			
-	# Runs the DagCmd				
-	## Call DagCmd as a function
-	def __call__(self, *args, **kwargs):
-		parsed = associate_args_to_names(self.argspec, locals())
+		if self.root:
+			return dag.format(f'<<c {main_format}>{self.root.name} "{self.name}": {objrepr}</c>>')
 
-		with dag.ctx(parsed = parsed):
-			return self.run_with_parsed(parsed)
+		return dag.format(f'<<c {main_format}> "{self.name}": {objrepr}</c>>')
+
+
+	# Runs the DagCmd from a function call
+	def __call__(self, *args, **kwargs) -> object:
+		return self.run(*args, **kwargs)
+
+
+	def run(self, *args, **kwargs):
+		parsed = map_argspec_to_locals(self.argspec, locals())
+		return self.run_with_parsed(parsed)
+
+
+	def showcli(self, *args, **kwargs):
+		results = self.run(*args, **kwargs)
+		parsed = map_argspec_to_locals(self.argspec, locals())
+		formatter = dag.formatter()
+		self.settings.display(results, formatter, parsed)
+		dag.echo(formatter)
+		return results
+
+
+	def run_with_parsed(self, parsed: Mapping, update_cache: bool = False):
+		return self.dagcmd_executor(self, parsed, update_cache).run()
 
 
 	## Update the DagCmd cache as a function
 	def update(self, *args, **kwargs):
-		try:
-			self.update_dagcmd_cache = True
-			return self(*args, **kwargs)
-		finally:
-			self.update_dagcmd_cache = False
+		parsed = map_argspec_to_locals(self.argspec, locals())
+		return self.run_with_parsed(parsed, update_cache = True)
 
 
-	def update_with_parsed(self, parsed):
-		try:
-			self.update_dagcmd_cache = True
-			return self.run_with_parsed(parsed)
-		finally:
-			self.update_dagcmd_cache = False
-
-
-	## THE dagcmd runner
-	def run_with_parsed(self, parsed):
-		with dag.ctx(active_dagcmd = self, active_parsed = parsed):
-			dagcmd_exctx = DagCmdExecutionContext(self, parsed)
-
-			with dag.ctx(parsed = parsed, active_dagcmd = self, dagcmd_execution_ctx = dagcmd_exctx):
-				try:
-					response = self.run_dagcmd(parsed, dagcmd_exctx)
-
-					with dag.ctx(active_response = response):
-						if "testbool" in self.settings:
-							print(self.settings.testbool)
-
-						if self.settings.cache and (dag.ctx.directives.update_all_caches or self.update_dagcmd_cache or not self.is_cached_from_exctx(dagcmd_exctx)):
-							CacheFile.write_from_dagcmd_exctx(response, dagcmd_exctx)
-
-						if self.settings.tempcache and not TempCacheFile.exists_from_dagcmd_exctx(dagcmd_exctx):
-							TempCacheFile.write_from_dagcmd_exctx(response, dagcmd_exctx)						
-
-						return response
-
-				except self.settings.catch as e:
-					print(f"\n\033[1mDagCmd: Caught anticipated error:\033[0m\n")
-					return traceback.print_exc()
-
-
-	def is_cached(self, **kwargs):
-		exctx = DagCmdExecutionContext(self, kwargs)
-		return self.is_cached_from_exctx(exctx)
-
-
-	def is_cached_from_exctx(self, exctx):
-		return CacheFile.exists_from_dagcmd_exctx(exctx)
-
-
-	# Used by CollectionDagCmd for further processing
-	def run_dagcmd(self, parsed, dagcmd_exctx):
-		with dag.ctx(parsed = parsed):
-			return self.get_response(parsed, dagcmd_exctx)
-
-
-
-	def get_response(self, parsed, dagcmd_exctx):
-		response = None
-
-		# Returns contents of a cachefile/tempcachefile instead of running the fn
-		if not dag.ctx.directives.update_all_caches and not self.update_dagcmd_cache:
-			# Check tempcache first
-			if self.settings.tempcache and TempCacheFile.exists_from_dagcmd_exctx(dagcmd_exctx):
-				response = TempCacheFile.read_from_dagcmd_exctx(dagcmd_exctx)
-
-			elif self.settings.cache and self.is_cached_from_exctx(dagcmd_exctx):
-				response = self.read_from_cachefile(dagcmd_exctx)
-
-			if response is not None:
-				return response
-
-		try:
-			dag.hooks.do("before_evaulate_dagcmd")
-
-			# If "value" setting is set, grab that as response
-			if "value" in self.settings:
-				response = self.get_dagcmd_value()
-				
-			# Runs the function if no cache or value setting found
-			if response is None:
-				response = self.run_fn_with_parsed(parsed)
-		finally:
-			dag.hooks.do("after_evaulate_dagcmd")
-
-		return self.process_response_type(response)
-
-
-	def process_response_type(self, response):
-		if self.settings.get("type") and isinstance(response, str):
-			return self.settings.type(response)
-
-		return response
+	def update_with_parsed(self, parsed: Mapping):
+		return self.run_with_parsed(parsed, update_cache = True)
 
 
 	def partial(self, *args, **kwargs):
 		return PartialDagCmd(self, locals())
 
 
-	def read_from_cachefile(self, dagcmd_exctx):
-		with dag.ctx(cachefile_reading = True):
-			dag.hooks.do("dagcmd_before_cachefile_read")
-			response = CacheFile.read_from_dagcmd_exctx(dagcmd_exctx)
-			dag.hooks.do("dagcmd_after_cachefile_read", response)
-			return response
-
-
-	def get_dagcmd_value(self):
-		response = None
-
-		try:
-			dag.hooks.do("dagcmd_before_value")
-			response = self.settings.value
-			return response
-		except:
-			raise
-		finally:
-			if response is not None:
-				dag.hooks.do("dagcmd_after_value", response)
-			
-
-	def run_fn_with_parsed(self, parsed):
-		args, kwargs = self.translate_parsed_to_fn_args(parsed)
-		
-		try:
-			dag.hooks.do("dagcmd_before_fn")
-			response = self.fn(self.dagmod, *args, **kwargs)
-			dag.hooks.do("dagcmd_after_fn", response)
-			return response
-		except TypeError as e:
-			breakpoint()
-			return self.fn(self.dagmod)
-			
-
-	# Used to make sure parsed dagargs.kwargs conform to internal callable argspec
-	def translate_parsed_to_fn_args(self, parsed):
-		args = []
-		for arg in self.fn_argspec.args[1:]:
-			if arg in parsed:
-				args.append(parsed.get(arg))
-					
-		if self.fn_argspec.varargs:
-			argval = parsed.get(self.fn_argspec.varargs, [])
-			if isinstance(argval, (list, tuple)):
-				args.extend(argval)
-			else:
-				args.append(argval)
-				
-		kwargs = {name:val for name,val in parsed.items() if name in self.fn_argspec.kwonlyargs}
-			
-		if self.fn_argspec.varkw:
-			argnames = [*filter(None, (self.fn_argspec.args[1:] + self.fn_argspec.kwonlyargs) + [self.fn_argspec.varargs])]
-			kwargs.update({name:val for name,val in parsed.items() if name not in argnames})
-
-		return (args, kwargs)
+	# Decorator used to set display fn
+	@property
+	def display(self) -> DisplayBuilder:
+		return self._display_builder
 
 
 	@property
-	def __doc__(self): return self.fn.__doc__
+	def __doc__(self) -> str:
+		if self.fn:
+			return self.fn.__doc__
+
+		return "NO DOC FOR NON-FN DAGCMD"
 	
 	@property
-	def __name__(self): return self.fn.__name__
+	def __name__(self) -> str:
+		return self.name
+#<<<< DagCmd
 
 
 	
-	class DagArgsList(Sequence):
-		def __init__(self, dagcmd):
-			self.dagcmd = dagcmd
-			self.dagargs_settings_dicts = dagcmd.dagargs_settings_dicts
 
-			self._dagargs = []
-			self.dagargs_dict = {argname: {} for argname in self.argnames}
-
-			# Process any passed-in arg settings
-			self.process_dagargs_dicts()
-				
-			# For any dagargs.in the cmd fn that weren't specified in an @dag.arg, build them here
-			for arg_name in self.dagcmd.argspec.args:
-				if arg_name == "self":
-					continue
-
-				if self.get(arg_name) is None:
-					self.add_dagarg(dagargs.DagArg(arg_name, dagcmd, {}))
-
-			if vararg := self.dagcmd.argspec.varargs:
-				self.add_dagarg(dagargs.DagArg(vararg, dagcmd, {"nargs": -1, "required": False, "nargs_join": None}))
-
-			# For any dagargs.in the cmd fn that weren't specified in an @dag.arg, build them here
-			for arg_name in self.dagcmd.argspec.kwonlyargs:
-				if self.get(arg_name) is None:
-					self.add_dagarg(dagargs.DagArg(f"--{arg_name}", dagcmd, {}))
-			
-		def __getitem__(self, idx): return self._dagargs[idx]
-		def __len__(self): return len(self._dagargs)
-
-
-		@property
-		def argnames(self):
-			argspec = self.dagcmd.argspec
-			# [1:] is to remove 'self'
-			return argspec.args[1:] + ([argspec.varargs] if argspec.varargs else []) + argspec.kwonlyargs + ([argspec.varkw] if argspec.varkw else [])
-
-
-			
-		@property
-		def dagargs(self):
-			return self._dagargs
-			
-
-		@property
-		def names(self):
-			return [dagarg.name for dagarg in self._dagargs]
-			
-
-		def process_dagargs_dicts(self):
-			for dagarg_name, dagarg_settings_dict in self.dagargs_settings_dicts.items():
-				dagargclass = dagarg_settings_dict.get("_arg_type", dagargs.DagArg)
-
-				# Remove name and argtype from settings dict
-				# "pop" allows for removing withouot try/keyerror
-				#dagarg_settings_dict.pop("_arg_type", None) Removed because it was breaking commands with multiple @dag.cmd's (see V _ticket)
-				#dagarg_settings_dict.pop("_name", None)
-				
-				dagarg = dagargclass(dagarg_name, self.dagcmd, dagarg_settings_dict)
-
-				self.add_dagarg(dagarg)
-
-
-		def add_dagarg(self, dagarg):
-			if dagarg.is_positional_dagarg and dagarg.clean_name not in self.dagcmd.argspec.args:
-				self.dagcmd.argspec.args.append(dagarg.clean_name)
-
-			elif dagarg.is_named_dagarg and dagarg.clean_name not in self.dagcmd.argspec.kwonlyargs:
-				self.dagcmd.argspec.kwonlyargs.append(dagarg.clean_name)
-
-			self._dagargs.append(dagarg)
-				
-			ordered_args = [self.get(arg_name) for arg_name in self.dagcmd.argspec.args if arg_name != "self" and self.get(arg_name) is not None]
-
-			if self.dagcmd.argspec.kwonlyargs and dagarg not in ordered_args:
-				ordered_args += [self.get(kwarg_name) for kwarg_name in self.dagcmd.argspec.kwonlyargs if self.get(kwarg_name) is not None]
-				
-			self._dagargs = ordered_args
-
-			
-		def pop(self, idx = -1):
-			return self._dagargs.pop(idx)
-			
-		def get(self, name):
-			return next((dagarg for dagarg in self._dagargs if name in (dagarg.name, dagarg.clean_name)), None)
-			
-		def get_named_dagargs_names(self):
-			return [dagarg.name for dagarg in self._dagargs if dagarg.is_named_dagarg]
-			
-		def get_positional_dagargs(self):
-			return [dagarg for dagarg in self._dagargs if dagarg.is_positional_dagarg]
-						
-		def __str__(self): return str(self._dagargs)
-
-		def __repr__(self): return f"DagArgs: {self._dagargs}"
-			
-		"""
-		def __getitem__(self, idx):
-			try:
-				return self.dagargs[idx]
-			except IndexError as e:
-				return None
-		"""
-			
-		"""def copy(self): return self.__class__(self.dagcmd, deepcopy(self.dagargs_settings_dicts))"""
 		
-		
-
-class PartialDagCmd(DagCmd):
+#>>>> PARTIAL DAGCMD
+class PartialDagCmd(dag.dot.DotProxy):
 	def __init__(self, dagcmd, locals = None):
-		super().__init__(dagcmd.fn, dagcmd.settings, dagmod = dagcmd.dagmod, dagargs_settings_dicts = dagcmd.dagargs_settings_dicts, name = dagcmd.name)
+		super().__init__(dagcmd)
 		self.dagcmd = dagcmd
-		self.locals = associate_args_to_names(self.argspec, locals or {})
-
-	def run_with_parsed(self, parsed):
-		parsed |= self.locals
-		return super().run_with_parsed(parsed)
-		
-
-		
-		
-class CollectionDagCmd(DagCmd):		
-	def __init__(self, *args, **kwargs):
-		super().__init__(*args, **kwargs)
-
-		self.resource_name = "resource"
-
-		resources_dagarg = self.dagargs.get(self.resource_name)
-
-		if resources_dagarg is None:
-			resources_dagarg = dagargs.CollectionResourceArg(self.resource_name, self, {"collection": self}) # Settings are left empty here and filled belofw becuase of how the @dag.resources decorator works
-			self.dagargs.add_dagarg(resources_dagarg)
-		else:
-			resources_dagarg.settings.collection = self
-			resources_dagarg.settings.args = [dag.decorators.arg(dagarg.clean_name) for dagarg in self.dagargs.get_positional_dagargs() if dagarg.clean_name != self.resource_name]
-			#resources_dagarg = dagargs.CollectionResourceArg(self.fn_name, self, resources_dagarg.settings | {"collection": self, "args": [dag.decorators.arg(dagarg.clean_name) for dagarg in self.dagargs.get_positional_dagargs() if dagarg.clean_name != self.resource_name],})
+		self.locals = map_argspec_to_locals(dagcmd.argspec, locals or {})
+# <<<<<<< PARTIAL DAGCMD
 
 
-		self.resources_dagarg = resources_dagarg
-	
-		self.settings.setdefault("_cmd_type", type(self))
-		self.settings.setdefault("cache", bool(self.settings.label or self.resources_dagarg.settings.label))
-		self.settings.setdefault("launch", "")
-		self.settings.setdefault("label", "")
-		self.settings.setdefault("label_ignore_chars", [])
-		self.settings.setdefault("id", "")
-
-		self.settings._resource_settings = self.settings | self.resources_dagarg.settings
-		
-		
-	def get_resource_from_parsed(self, collection, parsed):
-		argvalue = self.resources_dagarg.settings.get("value")
-		resource = parsed[self.resource_name]
-
-	 	# Collection is here for things like regex r/.*/
-		if isinstance(resource, (dag.Resource, dag.Collection)):
-			return resource
-			
-		# NOTE: Getting used by XML stuff
-		parsed_no_resource = {k:v for k,v in parsed.items() if k is not self.resource_name}
-		return self.run_with_parsed(parsed_no_resource).find(parsed[self.resource_name])
-
-	
-
-	def run_dagcmd(self, parsed, dagcmd_exctx):
-		parsed_no_resource = {k: v for k, v in parsed.items() if k != self.resource_name}
-
-		response = super(type(self), self).run_dagcmd(parsed_no_resource, dagcmd_exctx)
-		
-		if not isinstance(response, (dag.Response, dag.Collection)):
-			response = dag.Response(response)
-
-		if not isinstance(response, dag.Collection):
-			response = dag.Collection(response, settings = self.settings, parsed = parsed_no_resource, name = self.cmdpath())
-
-		if self.resource_name in parsed:
-			return self.get_resource_from_parsed(response, parsed)
-			
-		return response
+# >>>> Filtered DagCmd
+class FilteredDagCmd(dag.dot.DotProxy):
+	def __init__(self, dagcmd, *filters):
+		super().__init__(dagcmd)
+		self.dagcmd = dagcmd
+		self.filters = filters
 
 
-
-	def prompt_for_resource(self):
-		# This was ported from DagMod. It was never finished.
-		# This will prompt for parents to drill into this collection
-		# Used, for example, by M
-
-		ancestors = [self]
-		ancestor = self
-
-		while ancestor.settings.parent:
-			ancestor = getattr(self, ancestor.settings.parent.name[0])
-			ancestors.append(ancestor)
-
-		ancestors = ancestors.reverse()
-			
+	def run_with_parsed(self, parsed = None, *args, **kwargs):
 		breakpoint()
+		response = super().run_with_parsed(parsed, *args, **kwargs)
+
+		items = []
+
+		breakpoint()
+		for filter in self.filters:
+			# NOTE: IF THE FOLLOWING BREAKS ON A DAGRESPOSNE, INCORPORATE TYPE CHECK AND USE dag.responses.filter 
+			response = response.filter(filter)
+
+			if not response:
+				break
+
+		return response
+# <<<< Filtered DagCmd
+
+
+
+
+#>>>> AppCmd 
+class AppCmd(dag.DotProxy):
+	def __init__(self, root, dagcmd):
+		super.__init__(dagcmd)
+		self.dagcmd = dagcmd
+		self.root = root
+#<<<< AppCmd
+
+
+
+
+#>>>> DagCmd DagArg Adder
+class DagArgAdder:
+	def __init__(self, dagcmd):
+		self.dagcmd = dagcmd
+		self.names = ()
+		self.settings = {}
+
+
+	def __getattr__(self, attr):
+		if attr in dagargs.registered_settings:
+			self.settings |= dagargs.registered_settings[attr]
+
+		return self
+
+
+	def __call__(self, *names, **settings):
+		self.dagcmd.argspec #generates argspec
+		dagargclass = dagargs.get_dagarg_class(self.settings)
+		dagarg = dagargclass(*(self.names + names), **(self.settings | settings))
+		dagarg(self.dagcmd.fn)
+
+		if isinstance(self.fn, dummies.DummyNoArgCallable):
+			self.fn = dummies.DummmyCallable()
+
+		if dagarg.target not in self.dagcmd._argspec.args + (self.dagcmd._argspec.kwonlyargs or []):
+			if dagarg.is_positional_dagarg:
+				self.dagcmd._argspec.args.append(dagarg.target)
+			else:
+				## KWARG PROCESSINGe
+				self.dagcmd._argspec.args.append(dagarg.target)
+				#breakpoint() # SET THIS TO WOKR WITH KWARGS
+				pass
+
+		return self.dagcmd
+#<<<< DagCmd DagArg Adder
 
 
 
 
 
-def associate_args_to_names(argspec: inspect.FullArgSpec, locals_dict: Mapping) -> dict["str", Any]:
-	argspec_args = {}
-
-	with dag.ctx(parsed = argspec_args):
-		start_idx = 1 if (argspec.args and "self" == argspec.args[0]) else 0
-
-		# Apply defaults
-		if argspec.defaults:
-			for argname, default in zip(argspec.args[start_idx:], argspec.defaults):
-				argspec_args[argname] = dag.nab_if_nabber(default)
-				
-		# Apply values
-		argspec_args |= dict(zip(argspec.args[start_idx:], locals_dict["args"]))
-
-		# Apply kwarg defaults
-		if argspec.kwonlydefaults:
-			for argname, default in dict(argspec.kwonlydefaults).items():
-				argspec_args[argname] = dag.nab_if_nabber(default)
-				
-		argspec_args |= locals_dict["kwargs"]
-			
-		if argspec.varargs:
-			total_fn_args = len(argspec.args[start_idx:])
-			argspec_args[argspec.varargs] = tuple(locals_dict["args"][total_fn_args:])
-
-		return argspec_args
+registered_cmdsettings = dag.ItemRegistry()
 
 
-class MetaDagCmd(DagCmd):
-	def __init__(self, *args, **kwargs):
-		super().__init__(*args, **kwargs)
-		self.completion_cmdtable = dag.default_dagcmd.subcmdtable
-
-
-
-
-
-registered_settings = {}
-
-
-def register_cmd(name, **settings):
-	registered_settings[name] = settings
-
-
-register_cmd("Parent", parentcmd = True)
-register_cmd("Collection", _cmd_type = CollectionDagCmd)
-register_cmd("Meta", _cmd_type = MetaDagCmd)
+def register_cmdsettings(name, **settings):
+	registered_cmdsettings[name] = settings

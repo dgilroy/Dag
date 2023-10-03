@@ -1,6 +1,6 @@
 import pytest
 
-from dag.lib import ctxmanager
+from dag.lib import ctxmanagers
 
 
 @pytest.fixture

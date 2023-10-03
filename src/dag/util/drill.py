@@ -1,12 +1,12 @@
 import re
-from typing import Union, Any
+from typing import Union, Any, Optional
 
 import dag
 
 class DagDrillError(BaseException): pass
 
 
-def _get_drillbits(driller: str, splitter: str = ".") -> list[str]:
+def get_drillbits(driller: str, splitter: str = ".") -> list[str]:
 	"""
 	Takes the drillstring and splits it into drillbits. This takes into account:
 		(1) Words separated by the splitter ("drill1.drill2" => ["drill1", "drill2"])
@@ -21,8 +21,9 @@ def _get_drillbits(driller: str, splitter: str = ".") -> list[str]:
 	:param splitter: The char that will split words into drillbits
 	"""
 
-	if driller.startswith(splitter):
-		driller = driller.lstrip(splitter)
+	with dag.catch() as e:
+		if driller.startswith(splitter):
+			driller = driller.lstrip(splitter)
 
 	# If there is an index query in drillbits: replace all "[...]" with ".[...]." for splitting
 	if "[" in driller:
@@ -60,7 +61,7 @@ def get_drillparts(drilltext: str, splitter: str = ".", combined_drillbits: bool
 	# Iterate through drillname until [, (, or . 
 	while i < n and drilltext[i] not in f"[({splitter}": i = i+1
 
-	drillbits = drilltext[i:] if combined_drillbits else _get_drillbits(drilltext[i:], splitter)
+	drillbits = drilltext[i:] if combined_drillbits else get_drillbits(drilltext[i:], splitter)
 
 	return drilltext[:i], drillbits
 	
@@ -68,7 +69,7 @@ def get_drillparts(drilltext: str, splitter: str = ".", combined_drillbits: bool
 
 	
 # Take an item and search through it from a string query
-def drill(drillee: object, driller: str, splitter: str = ".", drill_until: int = 0) -> Any:
+def drill(drillee: object, driller: object, splitter: str = ".", drill_until: int = 0) -> Any:
 	"""
 	A utility built to allow a CLI to query an object for
 		(1) list indices
@@ -87,17 +88,20 @@ def drill(drillee: object, driller: str, splitter: str = ".", drill_until: int =
 	if isinstance(driller, dag.util.mixins.DagDriller):
 		return driller._dag_drill(drillee)
 
+	if isinstance(driller, dag.ResourcesLambdaBuilder):
+		return driller(drillee)
+
 	# Stores the original item being drilled into
 	original_drillee = drillee
 	original_driller = driller
 
 	# Iterate through driller to separate attr queries and index queries (e.g.: "attr1[item1].attr2" => ["attr1", "item1", "attr2"]). Filters out Nones
-	drillbits = [bit for bit in _get_drillbits(driller, splitter) if bit is not None]
+	drillbits = [bit for bit in get_drillbits(driller, splitter) if bit is not None]
 
 	if drill_until:
 		drillbits = drillbits[:drill_until]
 		#driller = splitter.join(drillbits)
-		#driller = _get_drillbits(driller, splitter)
+		#driller = get_drillbits(driller, splitter)
 	
 	# Try to query through drillee
 	try:
@@ -123,27 +127,18 @@ def drill(drillee: object, driller: str, splitter: str = ".", drill_until: int =
 				
 
 				# If letters exist in the query index; this is a dict index and not a list index. Skip to next step
-				if is_bit_quoted or re.match("[a-zA-Z]", bit) or dag.lib.strtools.is_valid_quoted_string(bit):
+				if is_bit_quoted or re.match("[a-zA-Z]", bit) or dag.strtools.is_valid_quoted_string(bit):
 					pass
 				# Elif index query query is a list index: Process potential slicing (even if only one number present)
 				elif ":" in bit:
 					# Split slice query at ":"'s'
-					bits = bit.split(":")
-
-					# Slices can either be of form slice(start), slice(start,end), slice(start,end,step). 
-					# Make an array with the slice values, or None if no such value supplied
-					def register_slice(idx):
-						return int(bits[idx]) if bits[idx:idx+1] and [*filter(lambda x: x, bits[idx:idx+1])] else None
-
-					slice_bits = [register_slice(0), register_slice(1), register_slice(2)]
-
-					#slice_bits = [int(bits[0]) if bits[0:1] else None, int(bits[1]) if bits[1:2] else None, int(bits[2]) if bits[2:3] else None]
-
-					# Make the bit a slice object from the inputted slice values
-					bit = slice(*slice_bits)
+					bit = dag.strtools.strtoslice(bit)
 				# Elif, query is all numerical: Turn into an int
-				elif re.match(r"^[0-9_]*$", bit):
-					bit = int(bit)
+				elif not isinstance(bit, float):
+					try:
+						bit = int(bit)
+					except ValueError:
+						pass
 
 				try:
 					drillee = drillee.__getitem__(bit)
@@ -162,13 +157,13 @@ def drill(drillee: object, driller: str, splitter: str = ".", drill_until: int =
 			else:
 				drillee = getattr(drillee, bit)
 	except (AttributeError, IndexError) as e:
-		raise DagDrillError(f"\fn Drill error: {e} {drillee=} {drillbits=} {original_drillee=}")
+		raise DagDrillError(f"\fn Drill error: {e} {drillee=} {drillbits=} {original_drillee=}") from e
 
 	return drillee
 
 
 
-def drill_for_properties(obj: object, drilltext: str) -> list[str]:
+def drill_for_properties(obj: object, drilltext: str = "", drillbits = "", approved_initial_properties: list[str] | None = None, lstrip: str = "") -> list[str]:
 	"""
 	Drill into an object and return any of the returned-object's properties that start with the same letters as the final drillbit
 
@@ -178,11 +173,18 @@ def drill_for_properties(obj: object, drilltext: str) -> list[str]:
 
 	:param obj: The starting object to be investigated
 	:param drilltext: The text to process and use to drill the starting obj
+	:param approved_properties: Provides a list of properties that can be used. If none, will use dir(item)
 	:returns: A list of properties that match the drilltext
 	"""
 
 	drilled_args = []
-	drillee, drillbits = get_drillparts(drilltext)
+
+	if drilltext:
+		drillee, drillbits = get_drillparts(drilltext)
+	else:
+		drillee, drillbits = "", drillbits
+
+	_, drillbits_list = get_drillparts(drillbits, combined_drillbits = False)
 
 	if drillbits:
 		try:
@@ -193,22 +195,22 @@ def drill_for_properties(obj: object, drilltext: str) -> list[str]:
 			# [{drillee}] because dagpdb can only send a dict of locals
 			#item = drill(obj, f"[{drillee}]" + drillbits, drill_until = -1)
 			item = drill(obj, f"{drillee}" + drillbits, drill_until = -1)
-			drilled_args = dir(item)
+			drilled_args = approved_initial_properties if approved_initial_properties and len(drillbits_list) < 2 else dir(item)
 			driller = ".".join(drillbits.split(".")[:-1]) + "."
 			combined_drillparts = drillee  + driller
 
-			# If final drillbit starts with "_": Go ahead and show attributes starting with "_"
+			# IF final drillbit starts with "_": Go ahead and show attributes starting with "_"
 			if drillbits.split(".")[-1].startswith("_"):
-				return[combined_drillparts + arg for arg in drilled_args if (combined_drillparts + arg).startswith(drilltext)]
-			# Else, final drillbit does not start with "_": Ignore attributes starting with "_" (There are usually a lot so it clutters the screen)
+				return[(combined_drillparts + arg).lstrip(lstrip) for arg in drilled_args if (combined_drillparts + arg).startswith(drilltext)]
+			# ELSE, final drillbit does not start with "_": Ignore attributes starting with "_" (There are usually a lot so it clutters the screen)
 			else:
-				return [combined_drillparts + arg for arg in drilled_args if (combined_drillparts + arg).startswith(drilltext) and not arg.startswith("_")]
+				return [(combined_drillparts + arg).lstrip(lstrip) for arg in drilled_args if (combined_drillparts + arg).startswith(drilltext) and not arg.startswith("_")]
 		except DagDrillError:
 			pass
+	elif not (drillee or drillbits):
+		drilled_args = [d for d in dir(obj) if not d.startswith("_")]
 
 	return drilled_args
-
-
 
 
 
@@ -218,3 +220,31 @@ if __name__ == "__main__":
 		items = drill_for_properties(dag, ".ctx.")
 		breakpoint()
 		pass
+
+
+
+
+
+def set_idx_via_drill(drillstr, newvalue, response):
+	if isinstance(drillstr, dag.LambdaBuilder):
+		drillstr = dag.util.lambdabuilders.convert_lb_to_string(drillstr)
+
+	drillbits = get_drillbits(drillstr)
+
+	# If no drillstr provided, replace the response with the new value
+	if not drillbits:
+		response._data = newvalue
+		return response
+	
+	key = drillbits.pop()
+
+	parentdict = dag.drill(response, ".".join(drillbits))
+	parentdict[key] = newvalue
+	return response
+
+
+@dag.oninit
+def _():
+	@dag.cmd
+	def drill(drillee, drillstring: str):
+		return dag.drill(drillee, drillstring)

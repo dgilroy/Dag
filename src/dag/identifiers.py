@@ -1,219 +1,108 @@
 from __future__ import annotations
 
-import copy
+import copy, functools
 from collections import namedtuple
 from collections.abc import Mapping, MutableMapping
-from typing import Any
 
 import dag
+from dag import dagargs
+from dag.lib import ctxmanagers
+from dag.util import hooks
+from dag.builders import DisplayBuilder
+from dag.identifiertables import IdentifierTable
+from dag.dagcmdbuilders import DagCmdBuilderGenerator
 
 
 
-
-class DagCmdTable(Mapping, dag.dot.DotAccess):
-	"""
-	Note, this is made to be case-insensitive
-	"""
-
-	def __init__(self, owner: DagCmdBase, root = None, parent = None, name = "", **settings):
-		self._subcmds = {}
-		self.subcmdtable = self # For easier parsing
-
-		self.owner = owner
-		self.root = root if root is not None else self
-		self.parent = parent
-		self.name = name
-
-		self.settings = dag.DotDict(settings or {})
-		self.settings.setdefault("complete", True)
-		self.settings.setdefault("ignore_duplicates", False)
-
-		self.children = dag.DotDict()
-
-		self.table_containing = {}
-
-		if self.root is self:
-			self.register_child("innercmds")
-			self.register_child("subcmds")
-			self.register_child("parentcmds", ignore_duplicates = True)
-
-
-	def __getitem__(self, idx):
-		idx = idx.lower()
-		value = self._subcmds[idx]
-		return self.owner._get_subcmd(idx, value)
-
-
-	def getraw(self, idx):
-		return self._subcmds[idx]
-
-
-	def rawvalues(self):
-		for key in self.keys():
-			yield self.getraw(key)
-
-
-	def rawitems(self):
-		return [(k, self.getraw(k)) for k in self.keys()]
-
-
-	def __contains__(self, idx):
-		return idx in self._subcmds
-
-	def __iter__(self): return iter(self._subcmds)
-	def __len__(self): return len(self._subcmds)
-
-
-	def __getattr__(self, attr):
-		try:
-			return self.children[attr]
-		except KeyError:
-			raise AttributeError(f"DagCmdBase Table doesn't have child named \"<c b u>{attr}</c b u>\"")
-
-
-	def __dir__(self):
-		return [*set(object.__dir__(self) + [*self.children.keys()])]
-
-
-	# For when need to check settings
-	def _iter(self, return_names = False):
-		for idname, idval in self.items():
-			if isinstance(idval, Mapping):
-				yield from self._iter(idval, return_names)
-			else:
-				if return_names:
-					yield idname
-				else:
-					yield idval
-
-
-	def names(self):
-		return [*self.keys()]
-
-	def get_completion_names(self):
-		return [n for n in self.names() if self.table_containing[n].settings.complete]
-
-	def identifiers(self):
-		return [*self.values()]
-
-
-	def add(self, dagcmd: DagCmdBase, name = None):
-		# Can't add dagcmd directly to root table
-		if self is self.root: # "is" because comparing table items, so any empty tables are == eachother
-			raise TypeError("Cannot add dagcmd directly to root subcmdtable. Please add to a child, registering the child first it if necessary")
-
-		# Can't have same dagcmd in table
-		name = str(name if name is not None else dagcmd.name).lower()
-		if name in self.root:
-			if self.settings.ignore_duplicates:
-				return
-			else:
-				if not dag.ctx.is_reloading_dagmod:
-					raise ValueError(f"Item \"{name}\" already registered in IDTable in child {self.table_containing[name].name}")
-
-		# Add dagcmd to list of identifiers
-		self._subcmds[name] = dagcmd
-		self.table_containing[name] = self
-
-		# Add dagcmd info to all parent tables
-		# Note: Since can't add() to root, this table always has a parent 
-		table = self
-		parent = self.parent
-
-		while parent is not None:
-			parent._subcmds[name] = dagcmd
-			parent.table_containing[name] = table
-			parent = parent.parent
-
-		return self
-
-
-
-
-	def remove(self, name):
-		if name not in self:
-			return
-
-		table = self.table_containing.get(name)
-
-		while table is not None:
-			table._subcmds.pop(name, None)
-			table.table_containing.pop(name, None)
-			table = table.parent
-
-		return self
-
-
-	def maybe_register_child(self, name, **settings):
-		# If already registered, ignore
-		if name in self.children:
-			return self.children[name]
-
-		return self.register_child(name, **settings)
-
-
-	def register_child(self, name, **settings):
-		self.children[name] = DagCmdTable(self.owner, root = self.root, parent = self, name = name, **(self.settings | settings))
-		return self.children[name]
-
-
-	def drop(self):
-		self.clear()
-
-		if self.parent:
-			self.parent.children.pop(self.name, None)
-
-		return self
-
-
-	def populate(self, infodict):
-		for dagcmd_name, dagcmd in infodict.items():
-			self.add(dagcmd, dagcmd_name)
-
-
-
-	def clear(self):
-		for idname in dict(self._subcmds).keys():
-			self.remove(idname)
-
-		return self
-
-
-	def __repr__(self):
-		return f"<names = {self.names()}, {object.__repr__(self)}>"
-
-
-
-
-class DagCmdBase:
+class Identifier(DagCmdBuilderGenerator, dag.mixins.DagLaunchable, dag.mixins.CLIInputtable, dag.mixins.DagSettings):
 	"""
 	Anything identifiable will contain a table allowing for further searches
 	"""
 
-	subcmdtable: DagCmdTable
 	name: str = ""
-	settings: Mapping
-	dagmod: DagMod
 
+	def __init__(self, callframeinfo: tuple[str, int, str] | None, settings: Mapping = None):
+		self._callframeinfo = callframeinfo
+		self._settings = dag.util.nabbers.NabbableSettings(settings or {})
+		self._identifier_settings = self._settings
 
-	def __init__(self, ):
-		self.subcmdtable = DagCmdTable(self)
-		self.completion_cmdtable = self.subcmdtable
-		#self._parent_dagcmd = dag.ctx.active_dagcmd -> Causing issues with pickling
+		self.dagcmds = IdentifierTable(self)
 		self._parent_dagcmd = None
+		self._display_settings = dag.nabbers.NabbableSettings()
+		self._display_builder = DisplayBuilder(self)
+
+		self.collectioncmds = IdentifierCollectionCmds(self)
+
+		self.is_regexcmd = False # Will be set to True by appropriate dagcmds
+
+		self.ctx = ctxmanagers.Context()
+
+		self.hooks = hooks.HooksAPI(parentsettings = self._settings)
+		self.hook = self.hooks.hookbuilder
 
 
-	def _get_subcmd(self, subcmdname, subcmdtable_val):
-		return getattr(self, subcmdname)
 
 
+	@property
+	def settings(self):
+		return self._settings
+
+
+	def _dag_get_settings(self):
+		# Done this way so that a "settings" dagcmd doesn't make the underlying settings inaccessible
+		return self._identifier_settings
+
+
+	@settings.setter
+	def settings(self, settings):
+		self._settings = settings
+
+
+	def run_with_parsed(self, *args, **kwargs):
+		return f"{self.name} is a {type(self).__name__}, not a dagcmd"
+
+
+	def _dag_launch_item(self):
+		return self.settings.launch
+
+
+	@property
+	def display_settings(self):
+		return self._display_settings or getattr(self.settings.display, "display_settings", dag.nabbers.NabbableSettings())
+
+
+	def get_dagcmd(self, cmdname):
+		if cmdname in self.dagcmds:
+			return self.dagcmds[cmdname]
+
+		if self.dagcmds.regexcmds:
+			regexcmds = {k: self.dagcmds.regexcmds[k] for k in sorted([float(p) for p in self.dagcmds.regexcmds], reverse = True)}
+
+			for priority, regexcmdlist in regexcmds.items():
+				for regexcmd in regexcmdlist:
+					if dag.rslashes.fullmatch_rslash(cmdname, regexcmd.name):
+						return regexcmd
+
+		raise ValueError(f"{cmdname} not found in {self.name}.dagcmds")
+		pass
+
+
+	def get_dagcmd_names(self):
+		return self.dagcmds.names()
+
+
+	def has_dagcmd(self, cmdname):
+		return cmdname in self.get_dagcmd_names()
+
+
+	@property
 	def parents(self):
 		parents = [self._parent_dagcmd]
 
 		while hasattr(parents[-1], "_parent_dagcmd") and parents[-1]._parent_dagcmd:
 			parent = parents[-1]._parent_dagcmd
 
-			if parent == dag.default_dagcmd:
+			if parent == dag.defaultapp:
 				break
 
 			parents.append(parent)
@@ -221,8 +110,23 @@ class DagCmdBase:
 		return [*filter(None, parents)]
 
 
+	@property
+	def parentnames(self):
+		return [p.name for p in self.parents]
+
+
+	@functools.cached_property
+	def file(self):
+		return dag.FileManager(root = dag.directories.DATA / self.cmdpath("/"))
+
+
+	@functools.cached_property
+	def cachefile(self):
+		return dag.FileManager(root = dag.directories.CACHE / self.cmdpath("/"))
+
+
 	def cmdpath(self, separator = ".", until = 0):
-		parents = [self] + self.parents()
+		parents = [self] + self.parents
 
 		path = ""
 
@@ -230,68 +134,102 @@ class DagCmdBase:
 			parents = parents[abs(until):]
 
 		for parent in parents:
-			if parent == dag.default_dagcmd:
+			if parent == dag.defaultapp:
 				break
 
-			breakpoint(parent.name == "default_fn")
 			path = parent.name + separator + path
 
 		return path.rstrip(separator)
 
 
+	@property
+	def auth(self):
+		return AuthManager(self)
+
+
+	@property
+	def nab(self):
+		return dag.nabbers.SimpleNabber(self)
+
+
+	def names(self):
+		name = dag.listify(self.name, list)
+		aka = dag.listify(self.settings.aka, list) if self.settings.aka else []
+		return name + aka
 
 
 
+class AuthManager:
+	def __init__(self, identifier):
+		self.identifier = identifier
+
+	def token(self, fn):
+		self.identifier.settings.auth.raw_token = fn
+		return fn
 
 
 
+#>>>> Identifier CollectionCmds
+class IdentifierCollectionCmds:
+	def __init__(self, owner):
+		self.owner = owner
+		self.collectioncmds = {}
 
 
+	def add(self, name, collection):
+		self.collectioncmds[name] = collection
 
 
+	def __bool__(self):
+		return bool(self.collectioncmds)
+
+	
+	def get_resource_dagcmds(self, collection_dagcmd):
+		resource_dagcmds = []
+
+		with dag.ctx(active_collection_dagcmd = collection_dagcmd, is_getting_resource_methods = True):
+			for dagcmd in self.owner.dagcmds.values():
+				if dagcmd.settings.is_resource_method:
+					resource_dagcmds.append(dagcmd)
+					continue
+
+				if dagcmd.dagargs.positionalargs:
+					try:
+						candidate_dagarg = dagcmd.dagargs.positionalargs[0]
+
+						if not isinstance(candidate_dagarg, dagargs.ResourceDagArg):
+							continue
+							
+						collectioncmds = getattr(candidate_dagarg, "collectioncmds", [])
+
+						if not collectioncmds:
+							continue
+
+						#if (collection_dagcmd in collections or collections[0] is None) and not isinstance(candidate_dagarg, CollectionResourceDagArg):
+						if (collection_dagcmd in collectioncmds) and not isinstance(candidate_dagarg, dagargs.CollectionResourceDagArg):
+							resource_dagcmds.append(dagcmd)
+					except (AttributeError, IndexError) as e:
+						breakpoint(dagcmd.name == "pause")
+						continue
+
+		return resource_dagcmds
 
 
+	def get_collection_names(self):
+		return [*self.collectioncmds.keys()]
 
 
+	# Used by Help Formater
+	def get_collections(self):
+		return [*self.collectioncmds.items()]
 
 
+	def update_collections(self):
+		for coll in self.collectioncmds.values():
+			if coll.settings.cache:
+				coll.update()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-if __name__ == "__main__":
-	try:
-		id1 = DagCmdBase()
-		id1.name = "banana"
-
-		id2 = DagCmdBase()
-		id2.name = "apple"
-
-		id3 = DagCmdBase()
-		id3.name = "h"
-
-		idt = DagCmdTable()
-		idt.register_child("testitems", complete = False).add(id1).add(id2)
-
-		names = idt.names()
-		identifiers = idt.subcmds()
-		idt.children.testitems.clear().add(id3)
-
-		idt.register_child("testitems2", complete = True).add(id1).add(id2)
-		complete_names = idt.children.testitems2.get_completion_names()
-		breakpoint()
-		pass
-	except Exception as e:
-		print(e)
-		breakpoint()
-		pass
+	def __call__(self):
+		return self.get_collection_names()
+#<<<< Identifier CollectionCmds

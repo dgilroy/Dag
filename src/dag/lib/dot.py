@@ -24,16 +24,64 @@ class DotAccess:
 
 
 class DotProxy(DotAccess):
-	def __init__(self, obj):
-		object.__setattr__(self, '___dot_object', obj)
+	_dag_proxies = None
+
+	def __init__(self, *args):
+		for item in args:
+			self._add_proxy(item)
 
 
-	def __getattr__(self, attr, default = None):
-		return getattr(object.__getattribute__(self, "___dot_object"), attr)
+	def _add_proxy(self, item):
+		if self._dag_proxies is None:
+			self._dag_proxies = []
+
+		self._dag_proxies.append(item)
+
+		try:
+			cls = self.__class__
+			currentbases = (cls,) + cls.__bases__
+
+			itemtype = type(item)
+
+			if itemtype in currentbases:
+				return
+
+			#self.__class__ = type(cls.__name__, currentbases + (itemtype,), {}) #<- Was leading to class properties overwriting item's instance properties
+		except:
+			pass
+
+
+	def __getattr__(self, attr):
+		if self._dag_proxies is None:
+			self._dag_proxies = []
+
+		for proxy in self._dag_proxies:
+			try:
+				return getattr(proxy, attr)
+			except AttributeError:
+				continue
+
+		raise AttributeError(f"Attribute \"<c bu / {attr}>\" Not found")
 
 
 	def __dir__(self):
-		return [*set(object.__dir__(self) + dir(object.__getattribute__(self, "___dot_object")))]
+		if self._dag_proxies is None:
+			self._dag_proxies = []
+
+		items = set(object.__dir__(self))
+
+		for proxy in self._dag_proxies:
+			items |= set(dir(proxy))
+
+		return items
+
+
+	def __instancecheck__(self, instance):
+		if self._dag_proxies is None:
+			self._dag_proxies = []
+
+		return isinstance(instance, type(self)) or any(x for x in self._dag_proxies if isinstance(instance, type(x)))
+
 
 
 
@@ -43,8 +91,11 @@ class DotNone(DotAccess):
 
 
 def prep_dotdict(di): # Done outside of DotDict to prevent clogging the .namespace
+	di = di or {}
+
 	try:
-		di = di.copy() if hasattr(di, "copy") else {}
+		#di = di.copy() if hasattr(di, "copy") else {}
+		di = copy.copy(di)
 	except Exception as e:
 		breakpoint()
 		pass
@@ -54,9 +105,11 @@ def prep_dotdict(di): # Done outside of DotDict to prevent clogging the .namespa
 		try:
 			assert isinstance(key, str)
 		except AssertionError as e:
-			raise ValueError(f"DotDict key must be a str (Given: {key})")
+			raise ValueError(f"DotDict key must be a str (Given: {key})") from e
 
 	return di
+
+
 
 
 class DotDict(MutableMapping, DotAccess):
@@ -85,10 +138,14 @@ class DotDict(MutableMapping, DotAccess):
 
 
 	def __dir__(self):
+		"""
+		Append internal dict's keys to this object's dir entries
+		"""
+
 		return object.__dir__(self) + [*self._dict.keys()]
 		
 		
-	def __getitem__(self, idx: str) -> Any:
+	def __getitem__(self, idx: str) -> object:
 		"""
 		Gets element from DotDict's internal storage dict
 
@@ -96,10 +153,10 @@ class DotDict(MutableMapping, DotAccess):
 		:returns: The associated element in the internal dict
 		"""
 
-		return self._dict[idx]
+		return maybe_make_dotdict(self._dict[idx], self)
 
 
-	def __setitem__(self, idx: str, value: Any) -> NoReturn:
+	def __setitem__(self, idx: str, value: object) -> None:
 		"""
 		Sets the DotDict's internal storage dict key to a given value
 
@@ -114,7 +171,7 @@ class DotDict(MutableMapping, DotAccess):
 		self._dict[idx] = value
 
 
-	def __delitem__(self, idx: str) -> NoReturn:
+	def __delitem__(self, idx: str) -> None:
 		"""
 		Removes element from storage dict at given index
 
@@ -153,7 +210,7 @@ class DotDict(MutableMapping, DotAccess):
 		:returns: Either the element in the internal dict, or else the default value
 		"""
 
-		return self._dict.get(attr, default)
+		return maybe_make_dotdict(self._dict.get(attr, default), self)
 		
 
 	def __setattr__(self, attr: str, value: Any) -> NoReturn:
@@ -165,7 +222,7 @@ class DotDict(MutableMapping, DotAccess):
 		"""
 
 		if not isinstance(attr, str):
-			raise ValueError(f"DotDict key must be a str (Given: {attr})")
+			raise ValueError(f"DotDict key must be a str (Given: {type(attr)} = {attr})")
 
 		self._dict[attr] = value
 		
@@ -211,7 +268,6 @@ class DotDict(MutableMapping, DotAccess):
 		:param other: The mapping being merged into this DotDict
 		:returns: A dot dict with this and other's dicts merged
 		"""
-
 		return self.__or__(other)
 
 
@@ -231,3 +287,24 @@ class DotDict(MutableMapping, DotAccess):
 
 	#def __copy__(self):
 		#return self.__class__(copy.deepcopy(self._dict))
+
+
+
+def maybe_make_dotdict(item: object, dotdict: DotDict) -> object:
+	"""
+	If given item is a dict, turns it into the type of the given dotdict
+
+	:param item: The item to maybe convert into a dotdict
+	:param dotdict: The dotdict whose type the item should be derived from
+	:returns: The item, possibly converted into a dotdict
+	"""
+
+	# IF is dict: Try turning into dotdict
+	if isinstance(item, dict):
+		try:
+			return type(dotdict)(item)
+		# EXCEPT ValueError: dict had a key that wasn't a string, so don't convert to dotdict
+		except ValueError:
+			pass
+
+	return item

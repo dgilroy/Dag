@@ -1,4 +1,5 @@
 import os, pathlib
 
-ROOT_DIR = os.path.realpath(os.path.dirname(__file__)) + "/"
-ROOT_PATH = pathlib.Path(ROOT_DIR)
+CODE_PATH = pathlib.Path(os.path.realpath(os.path.dirname(__file__)))
+SRC_PATH = CODE_PATH.parent
+ROOT_PATH = SRC_PATH.parent

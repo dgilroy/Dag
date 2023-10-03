@@ -21,14 +21,6 @@ def eval_math(expression: str) -> float:
 				 #ast.BitXor: op.xor, Removing xor (^) bc I confuse it with power (**)'''
 
 	def eval_expr(expr: str) -> float:
-		"""
-		>>> eval_expr('2^6')
-		4
-		>>> eval_expr('2**6')
-		64
-		>>> eval_expr('1 + 2*3**(4^5) / (6 + -7)')
-		-5.0
-		"""
 		return eval_(ast.parse(expr, mode='eval').body)
 
 	def eval_(node: ast.expr) -> float:
@@ -40,8 +32,11 @@ def eval_math(expression: str) -> float:
 			return operators[type(node.op)](eval_(node.operand))
 		else:
 			raise ValueError(f"{node}, {expression=}")
-			
-	return eval_expr(expression)
+	
+	try:
+		return eval_expr(expression)
+	except SyntaxError:
+		return expression
 
 
 

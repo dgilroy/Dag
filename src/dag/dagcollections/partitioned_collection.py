@@ -7,7 +7,7 @@ from dag.lib import comparison
 
 class PartitionedCollection(MutableMapping):
 	def __init__(self, attr, collection):
-		self.collection = collection
+		self.collection = collection.sortby(attr)
 		self.resources = self.collection.resources
 		self.attr = attr
 		self._partition = self._build_partition(attr)
@@ -24,9 +24,13 @@ class PartitionedCollection(MutableMapping):
 	def _build_partition(self, attr):
 		parts = OrderedDict()
 
-		for item in self.resources:
-			part = dag.drill(item, attr)
-			parts.setdefault(part, []).append(item)
+		for resource in self.resources:
+			if callable(attr):
+				part = attr(resource)
+			else:
+				part = dag.drill(resource, attr)
+
+			parts.setdefault(part, []).append(resource)
 			
 		for part in parts:
 			parts[part] = self.collection.create_subcollection(parts[part])
@@ -97,7 +101,7 @@ class PartitionedCollection(MutableMapping):
 			
 		if item == self and item.is_empty():
 			self._partition = {}
-			self.collection = Collection([], self.collection.collection_dagcmd)
+			self.collection = Collection([]		)
 			
 		return self
 
@@ -111,9 +115,19 @@ class PartitionedCollection(MutableMapping):
 		
 
 	# Trim each subcollection in partition to have at most {total} entries
-	def cull_partitions(self, total = 2):
-		self._partition = {k: v[0:int(total)] for k, v in self._partition.items()}
+	def cull_partitions(self, total = 2, from_top = True):
+		sl = slice(0,int(total)) if from_top else slice(-int(total), None)
+		self._partition = {k: v[sl] for k, v in self._partition.items()}
 		return self
+
+
+	def head(self, total = 2):
+		return self.cull_partitions(total, from_top = True)
+
+
+	def tail(self, total = 2):
+		return self.cull_partitions(total, from_top = False)
+
 
 	# Take resources from partition and turn into a Collection in order
 	def collect(self, *items):
@@ -142,9 +156,9 @@ class PartitionedCollection(MutableMapping):
 
 
 	# Sort partitioned subcollections by given attribute
-	def sort_by(self, attr = None, reverse = False):
+	def sortby(self, attr = None, reverse = False):
 		for collection in self.yield_collections():
-			collection.sort_by(attr, reverse)
+			collection.sortby(attr, reverse)
 
 		return self
 
@@ -163,7 +177,12 @@ class PartitionedCollection(MutableMapping):
 			new_dagcoll = sum([self[key] for key in keys])
 			return self.create_subpartition(new_dagcoll)
 
-		return self._partition[key]
+
+		return self._partition.get(key) or self.collection.create_empty_collection()
+
+	def reverse(self):
+		return reversed(self)
+
 
 	def __setitem__(self, key, value): self._partition[key] = value
 	def __delitem__(self, key): del self._partition[key]

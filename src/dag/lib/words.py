@@ -15,7 +15,7 @@ def pluralize(text: str) -> str:
 
 	suffix = "s"
 
-	if text.endswith("s") or text.endswith("sh"):
+	if text.endswith(("s", "sh")):
 		suffix = "es"
 	elif re.search(fr"[{consonants}]y$", text):
 		text = text[:-1] + "ie"
@@ -24,12 +24,12 @@ def pluralize(text: str) -> str:
 
 
 
-def pluralize_by_quantity(quantity: float, text: str, plural: str = "") -> str:
+def pluralize_by_quantity(text: str, quantity: float, plural: str = "") -> str:
 	"""
 	Pluralized the given text if the quantity doesn't equal 1
 
-	:param quantity: The quantity of the word being pluralized
 	:param text: The word to pluralize
+	:param quantity: The quantity of the word being pluralized
 	:param plural: The desired pluralized word if it's an irregular plural
 	:returns: The pluralized word
 	"""
@@ -40,34 +40,34 @@ def pluralize_by_quantity(quantity: float, text: str, plural: str = "") -> str:
 	return text
 
 
-def quantize(quantity: float, text: str, plural: str = "") -> str:
+def quantize(text: str, quantity: float, plural: str = "") -> str:
 	"""
 	Returns a string with the quantity and the text, pluralized if necessary
 
-	:param quantity: The quantity of the word being pluralized
 	:param text: The word to pluralize
+	:param quantity: The quantity of the word being pluralized
 	:param plural: The desired pluralized word if it's an irregular plural
 	:returns: A string with the quantity and the (possibly pluralized) word
 	"""
 
-	return f"{quantity} " + pluralize_by_quantity(quantity, text, plural)
+	return f"{quantity} " + pluralize_by_quantity(text, quantity, plural)
 
 
-def quantize_or_ignore(quantity: float, text: str, plural: str = "") -> str:
+def quantize_or_ignore(text: str, quantity: float, plural: str = "") -> str:
 	"""
 	Returns a string with the quantity and the text, pluralized if necessary
 	If quantity is 0: return an empty string
 
-	:param quantity: The quantity of the word being pluralized
 	:param text: The word to pluralize
+	:param quantity: The quantity of the word being pluralized
 	:param plural: The desired pluralized word if it's an irregular plural
 	:returns: A string with the quantity and the (possibly pluralized) word
 	"""
 
-	return quantize(quantity, text, plural) if quantity else ""
+	return quantize(text, quantity, plural) if quantity else ""
 
 
-def gerund(word):
+def gerund(word: str) -> str:
 	if not word:
 		return ""
 
@@ -77,6 +77,8 @@ def gerund(word):
 		return word + suffix
 
 	if word.endswith("ee"):
+		pass
+	elif len(word) >= 3 and word[-3] in vowels and word[-2] in vowels and word[-1] in consonants:
 		pass
 	elif word[-2] in vowels and word[-1] in consonants:
 		word = word + word[-1] # dat => datt

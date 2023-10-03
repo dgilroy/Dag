@@ -1,10 +1,13 @@
 #!/bin/bash
 
+# The name of the program
+PROGRAM_NAME=dag
+
 # Command that gets the directory of this bash script
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 # The name of the file to load
-DAG_FILENAME=Dag.py
+DAG_FILENAME=dag_cli_initializer.py
 
 # The current Process ID for creating unique session directories
 PROCESSID=$$
@@ -15,66 +18,38 @@ TIMESTAMP=$(date +%s%N)
 # The args passed into the script (to be passed into Dag.py)
 PASSEDARGS="$@"
 
-# File that gets generated if Dag instance changes directories
-CWDFILE=$SCRIPT_DIR/.etc/dag-cwd/$PROCESSID-$TIMESTAMP
+# The folder that holds program state data
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/$PROGRAM_NAME"
 
-# Directory of file that will be created if Dag instance reloads itself.
-# Any args Dag instance passes into reload will get stored in RELOAD file
-RELOADFILE=$SCRIPT_DIR/.etc/dag-reload/$PROCESSID-$TIMESTAMP-reload
+# File that gets generated if Dag instance changes directories
+CWDFILE=$STATE_DIR/dag-cwd/$PROCESSID-$TIMESTAMP
 
 # Stores the current directory so that Dag starts in that directory
 STARTINGDIR=$(pwd)
 
-# Flag that stores whether the current working directory has changed
-CWD=false
-
-# Flag that stores whether Dag is reloading itself
-RELOAD=false
+# Gets python version for dag
+PYTHON_VERSION="${DAG_PYTHON_VERSION:-3}"
 
 # While loop that runs forever. This allows Dag to reload itself
-while true; do
-	# The python command that loads Dag and passes the necessary parameters
-	python $SCRIPT_DIR/$DAG_FILENAME $CWDFILE $RELOADFILE $PASSEDARGS
+# The python command that loads Dag and passes the necessary parameters
+#python$PYTHON_VERSION -m cProfile $SCRIPT_DIR/$DAG_FILENAME $CWDFILE $PASSEDARGS
+python$PYTHON_VERSION $SCRIPT_DIR/$DAG_FILENAME $CWDFILE $PASSEDARGS
+
+# If CWDFILE was created: Dag instance changed directories, so "exit" into that directory by creating a subshell
+# NOTE: maybe someday "dag" is an alias for "source {THIS-FILE}". Running source would allow for CD'ing without making a subhell
+# 		Or, could be a function in .bashrc
+if test -f "$CWDFILE"; then
+	# STORE the new directory
+	NEWDIR=$(tail -1 $CWDFILE)
 	
-	# If CWDFILE was created: Dag instance changed directories, so "exit" in that directory by creating a subshell
-	if test -f "$CWDFILE"; then
-		# STORE the new directory
-		NEWDIR=$(tail -1 $CWDFILE)
-		
-		# INDICATE that CWD has changed
-		CWD=true
-		
-		# DELETE Dag Instance's CWD file
-		rm $CWDFILE
-		
-		# CHANGE to new directory
-		cd $NEWDIR
-
-		# PRINT out to terminal that we are changing directories
-		printf "\n\nDag started in \033[1m\033[4m$STARTINGDIR\033[0m and ended in \033[1m\033[4m$(pwd)\033[0m\n"
-		printf "\033[1mStarting subshell in directory: \033[4m$(pwd)\033[0m\n"
-	fi
-
-	# If RELOADFILE was created: Dag instance reloaded itself, so reload Dag by continuing loop
-	if test -f "$RELOADFILE"; then
-		# STORE the args that Dag instnace might have passed while reloading
-		PASSEDARGS=$(tail -1 $RELOADFILE)
-		
-		# DELETE the RELOAD file
-		rm $RELOADFILE
-		
-		# PRINT out to terminal that script is eloading
-		printf "\033[1mRELOADING DAG\033\0m\n"
-		continue;
-	fi
-
-	# If we made it here: Dag wasn't reloaded
+	# DELETE Dag Instance's CWD file
+	rm $CWDFILE
 	
-	# If CWD was set to TRUE: We are exiting here, so create a subshell for CWD stuff
-	if [ "$CWD" = "true" ]; then
-		/bin/bash
-	fi
+	# CHANGE to new directory
+	cd $NEWDIR
 
-	# EXIT the loop
-	break
-done
+	# PRINT out to terminal that we are changing directories
+	printf "\n\nDag started in \033[1m\033[4m$STARTINGDIR\033[0m and ended in \033[1m\033[4m$(pwd)\033[0m\n"
+
+	/bin/bash
+fi

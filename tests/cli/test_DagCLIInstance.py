@@ -2,7 +2,6 @@ import os, pytest, builtins
 
 import dag
 import dag.exceptions
-from dag.util import dagfile
 from dag.dagcli import instance
 
 
@@ -30,13 +29,13 @@ def instance_reloadfile(tmp_path):
 
 #@pytest.fixture(params = [None, [], [""],["false"]])
 @pytest.fixture(params = [None])
-def inputargs(request):
+def inputdagargs(request):
 	return request.param
 
 
 @pytest.fixture
-def instance(instance_cwdfile, instance_reloadfile, inputargs):
-	instance = instance.DagCLIInstance(inputargs, instance_cwdfile, instance_reloadfile, is_silent = False)
+def instance(instance_cwdfile, instance_reloadfile, inputdagargs):
+	instance = instance.DagCLIInstance(inputdagargs, instance_cwdfile, instance_reloadfile, is_silent = False)
 	yield instance
 	instance.shutdown()
 

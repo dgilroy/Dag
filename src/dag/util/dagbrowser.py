@@ -14,12 +14,12 @@ class FirefoxDriver(BrowserDriver):
 	def __init__(self, *args, **kwargs):
 		from selenium import webdriver
 		
-		log_path = f"{dag.ROOT_DIR}{dag.config.LOG_DIR}"
+		log_path = dag.directories.STATE / "firefox-logs"
 		
 		if not os.path.exists(log_path):
 			os.makedirs(log_path)
 		
-		self.driver = webdriver.Firefox(log_path = log_path + '/geckodriver.log', **kwargs)
+		self.driver = webdriver.Firefox(log_path = str(log_path / 'geckodriver.log'), **kwargs)
 
 		super().__init__(self.driver)
 
